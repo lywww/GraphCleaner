@@ -26,7 +26,7 @@ from torch_geometric.nn.models import MLP
 from run_GNNs_fordrawing import GCN, myGIN, GAT
 from run_GNNs import to_softmax, get_data, create_summary_writer
 from cleanlab.latent_estimation import compute_confident_joint, estimate_latent
-from evaluate_different_methods import cal_patk, get_ytest
+from evaluate_different_methods import cal_patk, cal_afpr, get_ytest
 
 
 def setup_seed(seed):
@@ -50,6 +50,7 @@ def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislab
     data, n_classes = get_data(dataset, noise_type, mislabel_rate)
     if neg_data:
         data = neg_data
+    # data.to(device)
     n_features = data.num_features
     print("Data: ", data)
 
@@ -130,6 +131,8 @@ def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislab
                 for batch in data_loader:
                     x = data.x[batch.n_id].to(device)
                     out = model(Data(x, batch.edge_index.to(device)))
+                    # print("out:", out)
+                    # print("out size:", out.size())
                     eval_out.append(out[:batch.batch_size].cpu().detach())
                     torch.cuda.empty_cache()
                     pbar.update(batch.batch_size)
@@ -145,13 +148,12 @@ def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislab
                     torch.save(model.state_dict(), trained_model_file)
 
         if neg_data:
-            if (epoch + 1) % 20 == 0:
-                all_sm_vectors.append(eval_out.cpu().detach().numpy())
-                # just try using the finetuned loss
+            if (epoch + 1) % 1 == 0:
                 all_sm_vectors.append(F.nll_loss(out, data.y, reduction='none').cpu().detach().numpy())
         else:
             if (epoch+1) % 20 == 0:
                 all_sm_vectors.append(eval_out.cpu().detach().numpy())
+        # all_sm_vectors.append(F.nll_loss(out, data.y, reduction='none').cpu().detach().numpy())
 
         # just try using the logit and the largest other logit
         # all_logits = model.get_logits(data).cpu().detach().numpy()
@@ -164,15 +166,16 @@ def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislab
         #     np.delete(tmp, [y])
         #     aum.append(logit-max(tmp))
         # all_sm_vectors.append(aum)
-        scheduler.step(cri)
+        # scheduler.step(cri)
 
     return np.array(all_sm_vectors), to_softmax(best_sm_vectors), data.cpu().detach(), n_classes
 
 
-def negative_sampling(data, noise_matrix, sample_rate, n_classes):
+def negative_sampling(data_orig, noise_matrix, sample_rate, n_classes):
     # filter out the classes with invalid noise transition probability distribution
-    train_idx = np.argwhere(data.train_mask == True)[0]
-    train_y = data.y[data.train_mask]
+    data = copy.deepcopy(data_orig)
+    train_idx = np.argwhere(data.held_mask == True)[0]
+    train_y = data.y[data.held_mask]
     valid_subidx = set([i for i in range(len(train_y))])
     for c in range(n_classes):
         if np.isnan(noise_matrix[0][c]) or max(noise_matrix[:, c]) == 1:
@@ -210,28 +213,40 @@ def generate_sm_feature(idx, all_sm_vectors):
     return np.array(all_sm_vectors[:, idx])
 
 
-def generate_new_feature(k, noisy_data, sample_idx, all_sm_vectors, n_classes):
+def generate_new_feature(k, data, noisy_data, sample_idx, all_sm_vectors, n_classes):
     print("Generating new features......")
     # construct an undirected graph
     G = nx.Graph()
-    for i in range(len(noisy_data.edge_index[0])):
-        G.add_edge(noisy_data.edge_index[0][i].item(), noisy_data.edge_index[1][i].item())
+    for i in range(len(data.edge_index[0])):
+        G.add_edge(data.edge_index[0][i].item(), data.edge_index[1][i].item())
 
     # get the one-hot label vector
-    label_vector = np.array([np.zeros(n_classes)] * noisy_data.num_nodes)
-    for i, y in enumerate(noisy_data.y):
+    label_vector = np.array([np.zeros(n_classes)] * data.num_nodes)
+    for i, y in enumerate(data.y):
         label_vector[i][y] = 1
 
     # combine the k-hop neighbor feature and the sm feature
-    features = [[]] * noisy_data.num_nodes
-    y = np.zeros(noisy_data.num_nodes)  # 1 indicates negative / noisy
+    features = [[]] * data.num_nodes
+    y = np.zeros(data.num_nodes)  # 1 indicates negative / noisy
     y[sample_idx] = 1
+    ident = np.eye(n_classes)
     for node in G.nodes():
         khop_feature = generate_khop_neighbor_feature(G, node, k, label_vector)
+        if y[node] == 1:
+            # negative samples only modify their own feature, not features of other nodes
+            # here we modify its feature to the noisy version
+            khop_feature[0] = np.zeros_like(khop_feature[0]) + ident[noisy_data.y[node]]
         sm_feature = generate_sm_feature(node, all_sm_vectors)
-        features[node] = np.vstack((khop_feature, sm_feature))  # (k + No. of selected epochs, n_classes)
-        # just try using the finetuned loss
-        # features[node] = np.hstack((khop_feature.reshape(-1), sm_feature))
+        # features[node] = np.vstack((khop_feature, sm_feature))  # (k + No. of selected epochs, n_classes)
+
+        features[node] = np.hstack((khop_feature.reshape(-1), sm_feature[-1,:].reshape(-1)))
+
+        agg0 = np.sum(to_softmax(sm_feature)[-1,:] * khop_feature[0]) # softmax score for observed label
+        agg1 = np.sum(khop_feature[1] * khop_feature[0]) # neighbour count for observed label
+        agg2 = np.sum((khop_feature[1] / np.sum(khop_feature[1])) * khop_feature[0]) # fraction of neighbors with observed label
+        features[node] = np.hstack((agg0, agg1, agg2, khop_feature[0]))
+        # features[node] = np.hstack((agg0, agg1, agg2))
+
         # just try using the logit and the largest other logit
         # features[node.item()] = np.hstack((khop_feature.reshape(-1), sm_feature))
 
@@ -239,7 +254,7 @@ def generate_new_feature(k, noisy_data, sample_idx, all_sm_vectors, n_classes):
 
 
 class myMLP(torch.nn.Module):
-    def __init__(self, channel_list, dropout=0.5, relu_first=True):
+    def __init__(self, channel_list, dropout=0.0, relu_first=True):
         super().__init__()
         self.mlp = MLP(channel_list=channel_list, dropout=dropout, relu_first=relu_first, batch_norm=True)
 
@@ -253,14 +268,15 @@ if __name__ == "__main__":
     setup_seed(1119)
 
     parser = argparse.ArgumentParser(description="Our Approach")
-    parser.add_argument("--dataset", type=str, default='Flickr')
+    parser.add_argument("--dataset", type=str, default='Cora')
     parser.add_argument("--data_dir", type=str, default='./dataset')
     parser.add_argument("--mislabel_rate", type=float, default=0.1)
     parser.add_argument("--noise_type", type=str, default='symmetric')
     parser.add_argument("--sample_rate", type=float, default=0.5)
     parser.add_argument("--model", type=str, default='GCN')
     parser.add_argument("--batch_size", type=int, default=2048)
-    parser.add_argument("--classifier", type=str, default='LR')
+    parser.add_argument("--classifier", type=str, default='MLP')
+    parser.add_argument("--held_split", type=str, default='valid')
     parser.add_argument("--n_epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument('--weight_decay', type=float, default=0.0005)
@@ -273,35 +289,42 @@ if __name__ == "__main__":
         (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.batch_size, args.lr,
          args.weight_decay)
     ensure_dir('mislabel_results')
-    mislabel_result_file = 'mislabel_results/{}-{}-mislabel={}-{}-sample={}-k={}-epochs={}-lr={}-wd={}'.format \
+    mislabel_result_file = 'mislabel_results/valtr-newloss-{}-{}-{}-mislabel={}-{}-sample={}-k={}-epochs={}-lr={}-wd={}'.format \
         (args.classifier, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.sample_rate, args.k,
          args.n_epochs, args.lr, args.weight_decay)
 
     # Step 1: train GNN and record the sm / log_sm vectors
-    all_sm_vectors, best_sm_vectors, data, n_classes = train_GNNs(args.model, args.dataset, args.n_epochs, args.lr,
+    old_all_sm_vectors, best_sm_vectors, data, n_classes = train_GNNs(args.model, args.dataset, args.n_epochs, args.lr,
                                                                      args.weight_decay, trained_model_file,
                                                                      args.mislabel_rate, args.noise_type, args.batch_size)
 
+    print("Held split is ", args.held_split)
+    data.held_mask = data.train_mask if args.held_split == 'train' else data.val_mask if args.held_split == 'val' else data.test_mask
     # Step 2: calculate confident joint and generate noise
     confident_joint = compute_confident_joint(data.y[data.val_mask], best_sm_vectors[data.val_mask])
     print("Confident Joint: ", confident_joint)
     py, noise_matrix, inv_noise_matrix = estimate_latent(confident_joint, data.y[data.val_mask])
-    print("Noise Matrix (p(s|y)): ", noise_matrix)
+    print("Noise Matrix (p(s|y)): ")
+    print(noise_matrix)
     plt.figure()
     sns.heatmap(noise_matrix.T, cmap='PuBu', vmin=0, vmax=1, linewidth=1, annot=True)
     plt.title('Learned Noise Transition Matrix')
     plt.savefig('val_Noise_Matrix_'+args.dataset+'_'+args.noise_type+'_'+str(args.mislabel_rate)+'_'+args.model+'.jpg',
                 bbox_inches='tight')
     plt.show()
+    ##
     # matrix_name = 'GT_Noise_Matrix_' + args.dataset + '_' + args.noise_type + '_' + str(args.mislabel_rate)
     # noise_matrix = np.load(matrix_name + '.npy')
     # sns.heatmap(noise_matrix.T, cmap='PuBu', vmin=0, vmax=1, linewidth=1, annot=True)
     # plt.title('Oracle Noise Transition Matrix')
     # plt.show()
+    print("Oracle")
+    print(noise_matrix)
+    ##
     noisy_data, tr_sample_idx = negative_sampling(data, noise_matrix, args.sample_rate, n_classes)
-    sample_ratio = len(tr_sample_idx) / sum(data.train_mask)
-    print("{} negative samples in {} training set, with a sample ratio of {}".format(
-        len(tr_sample_idx), sum(data.train_mask), sample_ratio))
+    sample_ratio = len(tr_sample_idx) / sum(data.held_mask)
+    print("{} negative samples in {} set, with a sample ratio of {}".format(
+        len(tr_sample_idx), sum(data.held_mask), sample_ratio))
 
     # Step 3: fit a classifier with the combined feature
     # all_sm_vectors, best_sm_vectors, data, n_classes = train_GNNs(args.model, args.dataset, 200, args.lr,
@@ -311,12 +334,12 @@ if __name__ == "__main__":
     # print("old sm: ", old_all_sm_vectors)
     # print("new sm: ", new_all_sm_vectors)
     # all_sm_vectors = np.vstack((old_all_sm_vectors, new_all_sm_vectors))
-    features, y = generate_new_feature(args.k, noisy_data, tr_sample_idx, all_sm_vectors, n_classes)
-    X_train = features[data.train_mask].reshape(features[data.train_mask].shape[0], -1)
-    y_train = y[data.train_mask]
+    features, y = generate_new_feature(args.k, data, noisy_data, tr_sample_idx, old_all_sm_vectors, n_classes)
+    X_train = features[data.held_mask].reshape(features[data.held_mask].shape[0], -1)
+    y_train = y[data.held_mask]
     X_test = features[data.val_mask].reshape(features[data.val_mask].shape[0], -1)
     if args.classifier == "LR":
-        classifier = LogisticRegression(max_iter=3000, multi_class='ovr')
+        classifier = LogisticRegression(max_iter=3000, multi_class='ovr', verbose=True)
     elif args.classifier == "XGB":
         classifier = XGBClassifier()
     elif args.classifier == "RF":
@@ -326,7 +349,7 @@ if __name__ == "__main__":
     elif args.classifier == "KNN":
         classifier = KNeighborsClassifier()
     elif args.classifier == "MLP":
-        classifier = myMLP([X_train.shape[1], 64, 2])
+        classifier = myMLP([X_train.shape[1], 32, 2])
     print("Fitting with {}......".format(args.classifier))
     if args.classifier != "MLP":
         classifier.fit(X_train, y_train)
@@ -334,11 +357,12 @@ if __name__ == "__main__":
         ensure_dir('tensorboard_logs')
         log_dir = 'tensorboard_logs/MLP-{}-{}-mislabel={}-{}-sample={}-k={}-epochs={}-lr={}-wd={}'.format \
                     (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.sample_rate, args.k,
-                    500, 0.001, args.weight_decay)
+                    600, 0.001, args.weight_decay)
         writer = create_summary_writer(log_dir)
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print("Device: ", device)
         X_train = torch.from_numpy(X_train).float().to(device)
+        # y_train = np.stack([1-y_train, y_train], axis=1)
         y_train = torch.from_numpy(y_train).long().to(device)
         classifier.to(device)
         optimizer = torch.optim.Adam(classifier.parameters(), lr=0.001, weight_decay=args.weight_decay)
@@ -347,7 +371,9 @@ if __name__ == "__main__":
             optimizer.zero_grad()
             out = classifier(X_train)
             loss = F.cross_entropy(out, y_train)
-            print("Epoch[{}] Loss: {:.2f}".format(epoch + 1, loss))
+            acc = accuracy_score(y_train.cpu().detach().numpy(), out.cpu().detach().numpy()[:, 1] > .5)
+            # te_acc = accuracy_score(y_train, out.cpu().detach().numpy()[:, 1] > .5)
+            print("Epoch[{}] Tr Loss: {:.2f} Acc: {:.2f}".format(epoch + 1, loss, acc))
             writer.add_scalar("MLP_training/loss", loss, epoch)
             loss.backward()
             optimizer.step()
@@ -372,6 +398,11 @@ if __name__ == "__main__":
             idx2score[i] = probs[i]
     er = [x[0] for x in sorted(idx2score.items(), key=lambda x: x[1], reverse=True)]
     cl_results = pd.DataFrame({'result': pd.Series(result), 'ordered_errors': pd.Series(er), 'score': pd.Series(probs)})
+    # cl_results = pd.DataFrame({'Id': [i for i in range(len(probs))], 'Prob': probs})
     cl_results.to_csv(mislabel_result_file+'.csv', index=False)
     ordered_idx = [x[0] for x in sorted(idx2prob.items(), key=lambda x: x[1], reverse=True)]
-    cal_patk(ordered_idx, get_ytest(args.dataset, args.noise_type, args.mislabel_rate, args.validation))
+    ytest = get_ytest(args.dataset, args.noise_type, args.mislabel_rate, args.validation)
+    cal_patk(ordered_idx, ytest)
+    cal_afpr(result, ytest)
+    roc_auc = roc_auc_score(ytest, probs)
+    print("ROC AUC Score on Test set: {:.2f}".format(roc_auc))

@@ -30,12 +30,12 @@ def get_data(dataset, noise_type='symmetric', mislabel_rate=0, special_set=None)
 
     elif dataset == 'Cora' or dataset == 'CiteSeer' or dataset == 'PubMed':
         data = Planetoid(root='./dataset', name=dataset)
-        train_mask = np.ones(len(data[0].train_mask), dtype=bool)
-        train_mask[data[0].val_mask] = False
-        train_mask[data[0].test_mask] = False
+        # train_mask = np.ones(len(data[0].train_mask), dtype=bool)
+        # train_mask[data[0].val_mask] = False
+        # train_mask[data[0].test_mask] = False
         n_classes = data.num_classes
         data = data[0]
-        data.train_mask = torch.from_numpy(train_mask)
+        # data.train_mask = torch.from_numpy(train_mask)
         print("number of training samples in get_data: ", sum(data.train_mask))
 
     if mislabel_rate == 0:
