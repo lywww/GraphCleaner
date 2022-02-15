@@ -49,7 +49,7 @@ if __name__ == "__main__":
     setup_seed(1119)
 
     parser = argparse.ArgumentParser(description="Baseline")
-    parser.add_argument("--dataset", type=str, default='Flickr')
+    parser.add_argument("--dataset", type=str, default='Cora')
     parser.add_argument("--data_dir", type=str, default='./dataset')
     parser.add_argument("--mislabel_rate", type=float, default=0.1)
     parser.add_argument("--noise_type", type=str, default='symmetric')

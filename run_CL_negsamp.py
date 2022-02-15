@@ -8,6 +8,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
 import networkx as nx
+import sklearn
 
 from sklearn.linear_model import LogisticRegression
 from xgboost import XGBClassifier
@@ -202,7 +203,7 @@ def generate_khop_neighbor_feature(G, node, k, label_vector):
         length2nb[l].append(nb)
     for hop in range(k+1):
         if len(length2nb[hop]) != 0:
-            feature.append(np.sum(label_vector[length2nb[hop]], axis=0) / len(length2nb[hop]))
+            feature.append(np.sum(label_vector[length2nb[hop]], axis=0))
         else:
             print("Warning: Node {} does not have {} hop neighbors!".format(node, hop))
             feature.append(np.zeros(len(label_vector[0])))
@@ -217,8 +218,10 @@ def generate_new_feature(k, data, noisy_data, sample_idx, all_sm_vectors, n_clas
     print("Generating new features......")
     # construct an undirected graph
     G = nx.Graph()
+
     for i in range(len(data.edge_index[0])):
         G.add_edge(data.edge_index[0][i].item(), data.edge_index[1][i].item())
+        # G.add_edge(data.edge_index[1][i].item(), data.edge_index[0][i].item())
 
     # get the one-hot label vector
     label_vector = np.array([np.zeros(n_classes)] * data.num_nodes)
@@ -226,26 +229,40 @@ def generate_new_feature(k, data, noisy_data, sample_idx, all_sm_vectors, n_clas
         label_vector[i][y] = 1
 
     # combine the k-hop neighbor feature and the sm feature
-    features = [[]] * data.num_nodes
+    features = [[0] * 7] * data.num_nodes
     y = np.zeros(data.num_nodes)  # 1 indicates negative / noisy
     y[sample_idx] = 1
     ident = np.eye(n_classes)
     for node in G.nodes():
-        khop_feature = generate_khop_neighbor_feature(G, node, k, label_vector)
+        khop_feature = generate_khop_neighbor_feature(G, node, 3, label_vector)
         if y[node] == 1:
             # negative samples only modify their own feature, not features of other nodes
             # here we modify its feature to the noisy version
             khop_feature[0] = np.zeros_like(khop_feature[0]) + ident[noisy_data.y[node]]
         sm_feature = generate_sm_feature(node, all_sm_vectors)
         # features[node] = np.vstack((khop_feature, sm_feature))  # (k + No. of selected epochs, n_classes)
-
-        features[node] = np.hstack((khop_feature.reshape(-1), sm_feature[-1,:].reshape(-1)))
+        # features[node] = np.hstack((khop_feature.reshape(-1), sm_feature[-1,:].reshape(-1)))
 
         agg0 = np.sum(to_softmax(sm_feature)[-1,:] * khop_feature[0]) # softmax score for observed label
-        agg1 = np.sum(khop_feature[1] * khop_feature[0]) # neighbour count for observed label
-        agg2 = np.sum((khop_feature[1] / np.sum(khop_feature[1])) * khop_feature[0]) # fraction of neighbors with observed label
-        features[node] = np.hstack((agg0, agg1, agg2, khop_feature[0]))
-        # features[node] = np.hstack((agg0, agg1, agg2))
+
+        neigh1 = khop_feature[1]
+        agg1 = np.max(neigh1 * khop_feature[0]) # neighbour count for observed label
+        agg2 = np.max(neigh1 * (1 - khop_feature[0])) # max neighbour count for unobserved labels
+        agg3 = np.max((neigh1 / np.sum(neigh1)) * khop_feature[0]) # fraction of neighbors with observed label
+
+        neigh2 = np.maximum(neigh1, khop_feature[2])
+        agg4 = np.max(neigh2 * khop_feature[0]) # neighbour count for observed label
+        agg5 = np.max(neigh2 * (1 - khop_feature[0])) # max neighbour count for unobserved labels
+        agg6 = np.max((neigh2 / max(1e-6, np.sum(neigh2))) * khop_feature[0]) # fraction of neighbors with observed label
+
+        neigh3 = np.maximum(neigh1, khop_feature[3])
+        agg7 = np.max(neigh3 * khop_feature[0]) # neighbour count for observed label
+        agg8 = np.max(neigh3 * (1 - khop_feature[0])) # max neighbour count for unobserved labels
+        agg9 = np.max((neigh3 / max(1e-6, np.sum(neigh3))) * khop_feature[0]) # fraction of neighbors with observed label
+
+        # features[node] = np.hstack((agg0, agg1, khop_feature[0]))
+        features[node] = np.hstack((agg0, agg1 - agg2, agg3, agg4 - agg5, agg6, agg7 - agg8, agg9))
+        # features[node] = np.hstack((agg0, agg3))
 
         # just try using the logit and the largest other logit
         # features[node.item()] = np.hstack((khop_feature.reshape(-1), sm_feature))
@@ -268,7 +285,7 @@ if __name__ == "__main__":
     setup_seed(1119)
 
     parser = argparse.ArgumentParser(description="Our Approach")
-    parser.add_argument("--dataset", type=str, default='Cora')
+    parser.add_argument("--dataset", type=str, default='PubMed')
     parser.add_argument("--data_dir", type=str, default='./dataset')
     parser.add_argument("--mislabel_rate", type=float, default=0.1)
     parser.add_argument("--noise_type", type=str, default='symmetric')
@@ -281,7 +298,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument('--weight_decay', type=float, default=0.0005)
     parser.add_argument('--k', type=int, default=1)
-    parser.add_argument('--validation', type=bool, default=True)
+    parser.add_argument('--validation', type=bool, default=False)
     args = parser.parse_args()
 
     ensure_dir('checkpoints')
@@ -299,7 +316,7 @@ if __name__ == "__main__":
                                                                      args.mislabel_rate, args.noise_type, args.batch_size)
 
     print("Held split is ", args.held_split)
-    data.held_mask = data.train_mask if args.held_split == 'train' else data.val_mask if args.held_split == 'val' else data.test_mask
+    data.held_mask = data.train_mask if args.held_split == 'train' else data.val_mask if args.held_split == 'valid' else data.test_mask
     # Step 2: calculate confident joint and generate noise
     confident_joint = compute_confident_joint(data.y[data.val_mask], best_sm_vectors[data.val_mask])
     print("Confident Joint: ", confident_joint)
@@ -312,7 +329,6 @@ if __name__ == "__main__":
     plt.savefig('val_Noise_Matrix_'+args.dataset+'_'+args.noise_type+'_'+str(args.mislabel_rate)+'_'+args.model+'.jpg',
                 bbox_inches='tight')
     plt.show()
-    ##
     # matrix_name = 'GT_Noise_Matrix_' + args.dataset + '_' + args.noise_type + '_' + str(args.mislabel_rate)
     # noise_matrix = np.load(matrix_name + '.npy')
     # sns.heatmap(noise_matrix.T, cmap='PuBu', vmin=0, vmax=1, linewidth=1, annot=True)
@@ -320,7 +336,6 @@ if __name__ == "__main__":
     # plt.show()
     print("Oracle")
     print(noise_matrix)
-    ##
     noisy_data, tr_sample_idx = negative_sampling(data, noise_matrix, args.sample_rate, n_classes)
     sample_ratio = len(tr_sample_idx) / sum(data.held_mask)
     print("{} negative samples in {} set, with a sample ratio of {}".format(
@@ -334,10 +349,15 @@ if __name__ == "__main__":
     # print("old sm: ", old_all_sm_vectors)
     # print("new sm: ", new_all_sm_vectors)
     # all_sm_vectors = np.vstack((old_all_sm_vectors, new_all_sm_vectors))
+
+    # note: generated features are clean for all points but corrupted for the negative samples in held_mask (e.g. val set)
     features, y = generate_new_feature(args.k, data, noisy_data, tr_sample_idx, old_all_sm_vectors, n_classes)
+    # features = sklearn.preprocessing.StandardScaler().fit_transform(features)
+
+    ##
     X_train = features[data.held_mask].reshape(features[data.held_mask].shape[0], -1)
     y_train = y[data.held_mask]
-    X_test = features[data.val_mask].reshape(features[data.val_mask].shape[0], -1)
+    X_test = features[data.test_mask].reshape(features[data.test_mask].shape[0], -1)
     if args.classifier == "LR":
         classifier = LogisticRegression(max_iter=3000, multi_class='ovr', verbose=True)
     elif args.classifier == "XGB":
@@ -389,6 +409,8 @@ if __name__ == "__main__":
         print("ROC AUC Score on Training set: {:.2f}".format(roc_auc))
         X_test = torch.from_numpy(X_test).float().to(device)
         probs = classifier(X_test).cpu().detach().numpy()[:, 1]
+    ##
+
     print("Saving result......")
     idx2prob = dict(zip([i for i in range(len(probs))], probs))
     result = probs > 0.5
@@ -406,3 +428,12 @@ if __name__ == "__main__":
     cal_afpr(result, ytest)
     roc_auc = roc_auc_score(ytest, probs)
     print("ROC AUC Score on Test set: {:.2f}".format(roc_auc))
+
+    XX = X_test.cpu().detach().numpy()
+    for i in range(XX.shape[1]):
+        print('roc of feature ', i, ' = ', roc_auc_score(ytest, -(XX[:,i])))
+    print("combined")
+    print(roc_auc_score(ytest, -(XX[:,1]+XX[:,0])/2))
+    print(roc_auc_score(ytest, -(XX[:,1]/5+XX[:,0])/2))
+
+    print("="*20)

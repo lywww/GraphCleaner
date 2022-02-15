@@ -9,9 +9,10 @@
       "type": "python",
       "request": "launch",
       "program": "run_CL_negsamp.py",
+      // "program": "run_baseline.py",
       // "program": "run_DY-bootstrap.py",
       "env": {
-        "CUDA_VISIBLE_DEVICES": "5",
+        "CUDA_VISIBLE_DEVICES": "0",
       },
       "console": "integratedTerminal"
     }

@@ -39,7 +39,7 @@ def get_ytest(dataset, noise_type, mislabel_rate, validation):
         if validation:
             mask = data.val_mask
         else:
-            mask = data.train_mask
+            mask = data.test_mask
         origin_class = np.array(list(data.y))[mask]
         noisy_class = np.array(list(noisy_class_map.values()))[mask]
         y_test = origin_class != noisy_class
