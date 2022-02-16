@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import networkx as nx
 import sklearn
+import scipy
 
 from sklearn.linear_model import LogisticRegression
 from xgboost import XGBClassifier
@@ -16,10 +17,12 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, matthews_corrcoef, roc_auc_score
+from scipy.sparse import identity, spdiags
 
 import torch
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau
+import torch_geometric
 from torch_geometric.data import Data
 from torch_geometric.loader import ClusterData, ClusterLoader, NeighborLoader, GraphSAINTRandomWalkSampler
 from torch_geometric.nn.models import MLP
@@ -29,6 +32,9 @@ from run_GNNs import to_softmax, get_data, create_summary_writer
 from cleanlab.latent_estimation import compute_confident_joint, estimate_latent
 from evaluate_different_methods import cal_patk, cal_afpr, get_ytest
 
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print("Device: ", device)
 
 def setup_seed(seed):
     np.random.seed(seed)
@@ -46,8 +52,6 @@ def ensure_dir(path):
 
 def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislabel_rate, noise_type, batch_size, neg_data=None):
     # prepare data
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print("Device: ", device)
     data, n_classes = get_data(dataset, noise_type, mislabel_rate)
     if neg_data:
         data = neg_data
@@ -233,41 +237,90 @@ def generate_new_feature(k, data, noisy_data, sample_idx, all_sm_vectors, n_clas
     y = np.zeros(data.num_nodes)  # 1 indicates negative / noisy
     y[sample_idx] = 1
     ident = np.eye(n_classes)
-    for node in G.nodes():
-        khop_feature = generate_khop_neighbor_feature(G, node, 3, label_vector)
-        if y[node] == 1:
-            # negative samples only modify their own feature, not features of other nodes
-            # here we modify its feature to the noisy version
-            khop_feature[0] = np.zeros_like(khop_feature[0]) + ident[noisy_data.y[node]]
-        sm_feature = generate_sm_feature(node, all_sm_vectors)
-        # features[node] = np.vstack((khop_feature, sm_feature))  # (k + No. of selected epochs, n_classes)
-        # features[node] = np.hstack((khop_feature.reshape(-1), sm_feature[-1,:].reshape(-1)))
 
-        agg0 = np.sum(to_softmax(sm_feature)[-1,:] * khop_feature[0]) # softmax score for observed label
+    A = torch_geometric.utils.convert.to_scipy_sparse_matrix(data.edge_index)
+    n = A.shape[0]
 
-        neigh1 = khop_feature[1]
-        agg1 = np.max(neigh1 * khop_feature[0]) # neighbour count for observed label
-        agg2 = np.max(neigh1 * (1 - khop_feature[0])) # max neighbour count for unobserved labels
-        agg3 = np.max((neigh1 / np.sum(neigh1)) * khop_feature[0]) # fraction of neighbors with observed label
+    # S = A
+    # S = spdiags(np.squeeze(np.array(A.sum(1))**-1), 0, n, n) @ A
+    S = spdiags(np.squeeze((1e-10 + np.array(A.sum(1)))**-0.5), 0, n, n) @ A @ spdiags(np.squeeze((1e-10 + np.array(A.sum(0)))**-0.5), 0, n, n)
+    # S = A @ spdiags(np.squeeze(np.array(A.sum(0))**-1), 0, n, n)
 
-        neigh2 = np.maximum(neigh1, khop_feature[2])
-        agg4 = np.max(neigh2 * khop_feature[0]) # neighbour count for observed label
-        agg5 = np.max(neigh2 * (1 - khop_feature[0])) # max neighbour count for unobserved labels
-        agg6 = np.max((neigh2 / max(1e-6, np.sum(neigh2))) * khop_feature[0]) # fraction of neighbors with observed label
+    S2 = S + S @ S
+    S3 = S + S @ S2
+    S2.setdiag(np.zeros((n,)))
+    S3.setdiag(np.zeros((n,)))
 
-        neigh3 = np.maximum(neigh1, khop_feature[3])
-        agg7 = np.max(neigh3 * khop_feature[0]) # neighbour count for observed label
-        agg8 = np.max(neigh3 * (1 - khop_feature[0])) # max neighbour count for unobserved labels
-        agg9 = np.max((neigh3 / max(1e-6, np.sum(neigh3))) * khop_feature[0]) # fraction of neighbors with observed label
+    L0 = label_vector
+    ymat = y[:, np.newaxis]
+    L_corr = (ymat * ident[noisy_data.y]) + (1 - ymat) * L0
+    L1 = S @ L0
+    L2 = S2 @ L0
+    L3 = S3 @ L0
+    L1n = spdiags(np.squeeze((1e-10 + np.array(L1.sum(1)))**-1), 0, n, n) @ L1 
+    L2n = spdiags(np.squeeze((1e-10 + np.array(L2.sum(1)))**-1), 0, n, n) @ L2 
+    L3n = spdiags(np.squeeze((1e-10 + np.array(L3.sum(1)))**-1), 0, n, n) @ L3 
 
-        # features[node] = np.hstack((agg0, agg1, khop_feature[0]))
-        features[node] = np.hstack((agg0, agg1 - agg2, agg3, agg4 - agg5, agg6, agg7 - agg8, agg9))
-        # features[node] = np.hstack((agg0, agg3))
+    P0 = scipy.special.softmax(all_sm_vectors[-1, :, :], axis=1)
+    P1 = S @ P0
+    P2 = S2 @ P0
+    P3 = S3 @ P0
+    P1n = spdiags(np.squeeze((1e-10 + np.array(P1.sum(1)))**-1), 0, n, n) @ P1 
+    P2n = spdiags(np.squeeze((1e-10 + np.array(P2.sum(1)))**-1), 0, n, n) @ P2 
+    P3n = spdiags(np.squeeze((1e-10 + np.array(P3.sum(1)))**-1), 0, n, n) @ P3
 
-        # just try using the logit and the largest other logit
-        # features[node.item()] = np.hstack((khop_feature.reshape(-1), sm_feature))
+    feat = np.hstack((
+        np.max(L_corr * P0, axis=1, keepdims=True),
+        np.max(L_corr * P1, axis=1, keepdims=True),
+        np.max(L_corr * P1n, axis=1, keepdims=True),
+        np.max(L_corr * P2, axis=1, keepdims=True),
+        np.max(L_corr * P2n, axis=1, keepdims=True),
+        np.max(L_corr * P3, axis=1, keepdims=True),
+        np.max(L_corr * P3n, axis=1, keepdims=True),
+        np.max(L_corr * L1, axis=1, keepdims=True),
+        np.max(L_corr * L1n, axis=1, keepdims=True),
+        np.max(L_corr * L2, axis=1, keepdims=True),
+        np.max(L_corr * L2n, axis=1, keepdims=True),
+        np.max(L_corr * L3, axis=1, keepdims=True),
+        np.max(L_corr * L3n, axis=1, keepdims=True),
+    ))
 
-    return np.array(features), y
+    # for node in G.nodes():
+    #     khop_feature = generate_khop_neighbor_feature(G, node, 3, label_vector)
+    #     if y[node] == 1:
+    #         # negative samples only modify their own feature, not features of other nodes
+    #         # here we modify its feature to the noisy version
+    #         khop_feature[0] = np.zeros_like(khop_feature[0]) + ident[noisy_data.y[node]]
+    #     sm_feature = generate_sm_feature(node, all_sm_vectors)
+    #     # features[node] = np.vstack((khop_feature, sm_feature))  # (k + No. of selected epochs, n_classes)
+    #     # features[node] = np.hstack((khop_feature.reshape(-1), sm_feature[-1,:].reshape(-1)))
+
+    #     agg0 = np.sum(to_softmax(sm_feature)[-1,:] * khop_feature[0]) # softmax score for observed label
+
+    #     neigh1 = khop_feature[1]
+    #     agg1 = np.max(neigh1 * khop_feature[0]) # neighbour count for observed label
+    #     agg2 = np.max(neigh1 * (1 - khop_feature[0])) # max neighbour count for unobserved labels
+    #     agg3 = np.max((neigh1 / np.sum(neigh1)) * khop_feature[0]) # fraction of neighbors with observed label
+
+    #     neigh2 = np.maximum(neigh1, khop_feature[2])
+    #     agg4 = np.max(neigh2 * khop_feature[0]) # neighbour count for observed label
+    #     agg5 = np.max(neigh2 * (1 - khop_feature[0])) # max neighbour count for unobserved labels
+    #     agg6 = np.max((neigh2 / max(1e-6, np.sum(neigh2))) * khop_feature[0]) # fraction of neighbors with observed label
+
+    #     neigh3 = np.maximum(neigh1, khop_feature[3])
+    #     agg7 = np.max(neigh3 * khop_feature[0]) # neighbour count for observed label
+    #     agg8 = np.max(neigh3 * (1 - khop_feature[0])) # max neighbour count for unobserved labels
+    #     agg9 = np.max((neigh3 / max(1e-6, np.sum(neigh3))) * khop_feature[0]) # fraction of neighbors with observed label
+
+    #     # features[node] = np.hstack((agg0, agg1, khop_feature[0]))
+    #     features[node] = np.hstack((agg0, agg1 - agg2, agg3, agg4 - agg5, agg6, agg7 - agg8, agg9))
+    #     # features[node] = np.hstack((agg0, agg3))
+
+    #     # just try using the logit and the largest other logit
+    #     # features[node.item()] = np.hstack((khop_feature.reshape(-1), sm_feature))
+
+    # # return np.array(features), y
+    return feat, y
 
 
 class myMLP(torch.nn.Module):
@@ -285,7 +338,7 @@ if __name__ == "__main__":
     setup_seed(1119)
 
     parser = argparse.ArgumentParser(description="Our Approach")
-    parser.add_argument("--dataset", type=str, default='PubMed')
+    parser.add_argument("--dataset", type=str, default='Cora')
     parser.add_argument("--data_dir", type=str, default='./dataset')
     parser.add_argument("--mislabel_rate", type=float, default=0.1)
     parser.add_argument("--noise_type", type=str, default='symmetric')
@@ -323,19 +376,22 @@ if __name__ == "__main__":
     py, noise_matrix, inv_noise_matrix = estimate_latent(confident_joint, data.y[data.val_mask])
     print("Noise Matrix (p(s|y)): ")
     print(noise_matrix)
-    plt.figure()
-    sns.heatmap(noise_matrix.T, cmap='PuBu', vmin=0, vmax=1, linewidth=1, annot=True)
-    plt.title('Learned Noise Transition Matrix')
-    plt.savefig('val_Noise_Matrix_'+args.dataset+'_'+args.noise_type+'_'+str(args.mislabel_rate)+'_'+args.model+'.jpg',
-                bbox_inches='tight')
-    plt.show()
+    # plt.figure()
+    # sns.heatmap(noise_matrix.T, cmap='PuBu', vmin=0, vmax=1, linewidth=1, annot=True)
+    # plt.title('Learned Noise Transition Matrix')
+    # plt.savefig('val_Noise_Matrix_'+args.dataset+'_'+args.noise_type+'_'+str(args.mislabel_rate)+'_'+args.model+'.jpg',
+    #             bbox_inches='tight')
+    # plt.show()
+
+    ##
     # matrix_name = 'GT_Noise_Matrix_' + args.dataset + '_' + args.noise_type + '_' + str(args.mislabel_rate)
     # noise_matrix = np.load(matrix_name + '.npy')
+
     # sns.heatmap(noise_matrix.T, cmap='PuBu', vmin=0, vmax=1, linewidth=1, annot=True)
     # plt.title('Oracle Noise Transition Matrix')
     # plt.show()
-    print("Oracle")
-    print(noise_matrix)
+    # print("Oracle")
+    # print(noise_matrix)
     noisy_data, tr_sample_idx = negative_sampling(data, noise_matrix, args.sample_rate, n_classes)
     sample_ratio = len(tr_sample_idx) / sum(data.held_mask)
     print("{} negative samples in {} set, with a sample ratio of {}".format(
@@ -379,8 +435,6 @@ if __name__ == "__main__":
                     (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.sample_rate, args.k,
                     600, 0.001, args.weight_decay)
         writer = create_summary_writer(log_dir)
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        print("Device: ", device)
         X_train = torch.from_numpy(X_train).float().to(device)
         # y_train = np.stack([1-y_train, y_train], axis=1)
         y_train = torch.from_numpy(y_train).long().to(device)
@@ -432,8 +486,4 @@ if __name__ == "__main__":
     XX = X_test.cpu().detach().numpy()
     for i in range(XX.shape[1]):
         print('roc of feature ', i, ' = ', roc_auc_score(ytest, -(XX[:,i])))
-    print("combined")
-    print(roc_auc_score(ytest, -(XX[:,1]+XX[:,0])/2))
-    print(roc_auc_score(ytest, -(XX[:,1]/5+XX[:,0])/2))
-
     print("="*20)
