@@ -17,7 +17,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, matthews_corrcoef, roc_auc_score
-from scipy.sparse import identity, spdiags
+from scipy.sparse import spdiags
 
 import torch
 import torch.nn.functional as F
@@ -220,106 +220,41 @@ def generate_sm_feature(idx, all_sm_vectors):
 
 def generate_new_feature(k, data, noisy_data, sample_idx, all_sm_vectors, n_classes):
     print("Generating new features......")
-    # construct an undirected graph
-    G = nx.Graph()
 
-    for i in range(len(data.edge_index[0])):
-        G.add_edge(data.edge_index[0][i].item(), data.edge_index[1][i].item())
-        # G.add_edge(data.edge_index[1][i].item(), data.edge_index[0][i].item())
-
-    # get the one-hot label vector
-    label_vector = np.array([np.zeros(n_classes)] * data.num_nodes)
-    for i, y in enumerate(data.y):
-        label_vector[i][y] = 1
-
-    # combine the k-hop neighbor feature and the sm feature
-    features = [[0] * 7] * data.num_nodes
     y = np.zeros(data.num_nodes)  # 1 indicates negative / noisy
     y[sample_idx] = 1
-    ident = np.eye(n_classes)
 
     A = torch_geometric.utils.convert.to_scipy_sparse_matrix(data.edge_index)
     n = A.shape[0]
 
-    # S = A
-    # S = spdiags(np.squeeze(np.array(A.sum(1))**-1), 0, n, n) @ A
+    # symmetric normalized adjacency matrix. 1e-10 is to prevent dividing by zero.
     S = spdiags(np.squeeze((1e-10 + np.array(A.sum(1)))**-0.5), 0, n, n) @ A @ spdiags(np.squeeze((1e-10 + np.array(A.sum(0)))**-0.5), 0, n, n)
-    # S = A @ spdiags(np.squeeze(np.array(A.sum(0))**-1), 0, n, n)
-
-    S2 = S + S @ S
-    S3 = S + S @ S2
-    S2.setdiag(np.zeros((n,)))
+    S2 = S @ S
+    S3 = S @ S2
+    S2.setdiag(np.zeros((n,))) # remove self-loops to prevent the algorithm peeking at the original label (L0)
     S3.setdiag(np.zeros((n,)))
 
-    L0 = label_vector
     ymat = y[:, np.newaxis]
-    L_corr = (ymat * ident[noisy_data.y]) + (1 - ymat) * L0
+    L0 = np.eye(n_classes)[data.y] # original labels, converted to one-hot matrix
+    L_corr = (ymat * np.eye(n_classes)[noisy_data.y]) + (1 - ymat) * L0 # label matrix corrupted by negative samples
     L1 = S @ L0
     L2 = S2 @ L0
     L3 = S3 @ L0
-    L1n = spdiags(np.squeeze((1e-10 + np.array(L1.sum(1)))**-1), 0, n, n) @ L1 
-    L2n = spdiags(np.squeeze((1e-10 + np.array(L2.sum(1)))**-1), 0, n, n) @ L2 
-    L3n = spdiags(np.squeeze((1e-10 + np.array(L3.sum(1)))**-1), 0, n, n) @ L3 
 
-    P0 = scipy.special.softmax(all_sm_vectors[-1, :, :], axis=1)
+    P0 = scipy.special.softmax(all_sm_vectors[-1, :, :], axis=1) # base model softmax predictions matrix
     P1 = S @ P0
     P2 = S2 @ P0
     P3 = S3 @ P0
-    P1n = spdiags(np.squeeze((1e-10 + np.array(P1.sum(1)))**-1), 0, n, n) @ P1 
-    P2n = spdiags(np.squeeze((1e-10 + np.array(P2.sum(1)))**-1), 0, n, n) @ P2 
-    P3n = spdiags(np.squeeze((1e-10 + np.array(P3.sum(1)))**-1), 0, n, n) @ P3
 
     feat = np.hstack((
-        np.max(L_corr * P0, axis=1, keepdims=True),
-        np.max(L_corr * P1, axis=1, keepdims=True),
-        np.max(L_corr * P1n, axis=1, keepdims=True),
-        np.max(L_corr * P2, axis=1, keepdims=True),
-        np.max(L_corr * P2n, axis=1, keepdims=True),
-        np.max(L_corr * P3, axis=1, keepdims=True),
-        np.max(L_corr * P3n, axis=1, keepdims=True),
-        np.max(L_corr * L1, axis=1, keepdims=True),
-        np.max(L_corr * L1n, axis=1, keepdims=True),
-        np.max(L_corr * L2, axis=1, keepdims=True),
-        np.max(L_corr * L2n, axis=1, keepdims=True),
-        np.max(L_corr * L3, axis=1, keepdims=True),
-        np.max(L_corr * L3n, axis=1, keepdims=True),
+        np.sum(L_corr * P0, axis=1, keepdims=True), # since L_corr is one-hot, this just extracts the corresponding entry of P0
+        np.sum(L_corr * P1, axis=1, keepdims=True),
+        np.sum(L_corr * P2, axis=1, keepdims=True),
+        np.sum(L_corr * P3, axis=1, keepdims=True),
+        np.sum(L_corr * L1, axis=1, keepdims=True),
+        np.sum(L_corr * L2, axis=1, keepdims=True),
+        np.sum(L_corr * L3, axis=1, keepdims=True),
     ))
-
-    # for node in G.nodes():
-    #     khop_feature = generate_khop_neighbor_feature(G, node, 3, label_vector)
-    #     if y[node] == 1:
-    #         # negative samples only modify their own feature, not features of other nodes
-    #         # here we modify its feature to the noisy version
-    #         khop_feature[0] = np.zeros_like(khop_feature[0]) + ident[noisy_data.y[node]]
-    #     sm_feature = generate_sm_feature(node, all_sm_vectors)
-    #     # features[node] = np.vstack((khop_feature, sm_feature))  # (k + No. of selected epochs, n_classes)
-    #     # features[node] = np.hstack((khop_feature.reshape(-1), sm_feature[-1,:].reshape(-1)))
-
-    #     agg0 = np.sum(to_softmax(sm_feature)[-1,:] * khop_feature[0]) # softmax score for observed label
-
-    #     neigh1 = khop_feature[1]
-    #     agg1 = np.max(neigh1 * khop_feature[0]) # neighbour count for observed label
-    #     agg2 = np.max(neigh1 * (1 - khop_feature[0])) # max neighbour count for unobserved labels
-    #     agg3 = np.max((neigh1 / np.sum(neigh1)) * khop_feature[0]) # fraction of neighbors with observed label
-
-    #     neigh2 = np.maximum(neigh1, khop_feature[2])
-    #     agg4 = np.max(neigh2 * khop_feature[0]) # neighbour count for observed label
-    #     agg5 = np.max(neigh2 * (1 - khop_feature[0])) # max neighbour count for unobserved labels
-    #     agg6 = np.max((neigh2 / max(1e-6, np.sum(neigh2))) * khop_feature[0]) # fraction of neighbors with observed label
-
-    #     neigh3 = np.maximum(neigh1, khop_feature[3])
-    #     agg7 = np.max(neigh3 * khop_feature[0]) # neighbour count for observed label
-    #     agg8 = np.max(neigh3 * (1 - khop_feature[0])) # max neighbour count for unobserved labels
-    #     agg9 = np.max((neigh3 / max(1e-6, np.sum(neigh3))) * khop_feature[0]) # fraction of neighbors with observed label
-
-    #     # features[node] = np.hstack((agg0, agg1, khop_feature[0]))
-    #     features[node] = np.hstack((agg0, agg1 - agg2, agg3, agg4 - agg5, agg6, agg7 - agg8, agg9))
-    #     # features[node] = np.hstack((agg0, agg3))
-
-    #     # just try using the logit and the largest other logit
-    #     # features[node.item()] = np.hstack((khop_feature.reshape(-1), sm_feature))
-
-    # # return np.array(features), y
     return feat, y
 
 
@@ -338,7 +273,7 @@ if __name__ == "__main__":
     setup_seed(1119)
 
     parser = argparse.ArgumentParser(description="Our Approach")
-    parser.add_argument("--dataset", type=str, default='Cora')
+    parser.add_argument("--dataset", type=str, default='CiteSeer')
     parser.add_argument("--data_dir", type=str, default='./dataset')
     parser.add_argument("--mislabel_rate", type=float, default=0.1)
     parser.add_argument("--noise_type", type=str, default='symmetric')
@@ -346,7 +281,7 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default='GCN')
     parser.add_argument("--batch_size", type=int, default=2048)
     parser.add_argument("--classifier", type=str, default='MLP')
-    parser.add_argument("--held_split", type=str, default='valid')
+    parser.add_argument("--held_split", type=str, default='valid') # train/valid/test
     parser.add_argument("--n_epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument('--weight_decay', type=float, default=0.0005)
@@ -482,8 +417,4 @@ if __name__ == "__main__":
     cal_afpr(result, ytest)
     roc_auc = roc_auc_score(ytest, probs)
     print("ROC AUC Score on Test set: {:.2f}".format(roc_auc))
-
-    XX = X_test.cpu().detach().numpy()
-    for i in range(XX.shape[1]):
-        print('roc of feature ', i, ' = ', roc_auc_score(ytest, -(XX[:,i])))
-    print("="*20)
+    print("on dataset: ", args.dataset)
