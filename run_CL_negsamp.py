@@ -273,7 +273,7 @@ if __name__ == "__main__":
     setup_seed(1119)
 
     parser = argparse.ArgumentParser(description="Our Approach")
-    parser.add_argument("--dataset", type=str, default='CiteSeer')
+    parser.add_argument("--dataset", type=str, default='PubMed')
     parser.add_argument("--data_dir", type=str, default='./dataset')
     parser.add_argument("--mislabel_rate", type=float, default=0.1)
     parser.add_argument("--noise_type", type=str, default='symmetric')
@@ -379,7 +379,7 @@ if __name__ == "__main__":
             classifier.train()
             optimizer.zero_grad()
             out = classifier(X_train)
-            loss = F.cross_entropy(out, y_train)
+            loss = torch.nn.L1Loss()(out[:,1], y_train.float())
             acc = accuracy_score(y_train.cpu().detach().numpy(), out.cpu().detach().numpy()[:, 1] > .5)
             # te_acc = accuracy_score(y_train, out.cpu().detach().numpy()[:, 1] > .5)
             print("Epoch[{}] Tr Loss: {:.2f} Acc: {:.2f}".format(epoch + 1, loss, acc))

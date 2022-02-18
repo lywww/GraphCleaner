@@ -12,7 +12,7 @@
       // "program": "run_baseline.py",
       // "program": "run_DY-bootstrap.py",
       "env": {
-        "CUDA_VISIBLE_DEVICES": "7",
+        "CUDA_VISIBLE_DEVICES": "5",
       },
       "console": "integratedTerminal"
     }
