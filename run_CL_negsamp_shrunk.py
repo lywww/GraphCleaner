@@ -7,8 +7,6 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy
-from scipy.sparse import spdiags
 import networkx as nx
 
 from sklearn.linear_model import LogisticRegression
@@ -16,10 +14,9 @@ from xgboost import XGBClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, roc_curve
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, matthews_corrcoef, roc_auc_score
 
 import torch
-import torch_geometric
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau
 from torch_geometric.data import Data
@@ -27,7 +24,7 @@ from torch_geometric.loader import ClusterData, ClusterLoader, NeighborLoader, G
 from torch_geometric.nn.models import MLP
 
 from GNN_models import GCN, myGIN, GAT, baseMLP
-from Utils import to_softmax, get_data, create_summary_writer, ensure_dir, setup_seed
+from Utils import to_softmax, get_data, create_summary_writer, setup_seed, ensure_dir
 from cleanlab.latent_estimation import compute_confident_joint, estimate_latent
 from evaluate_different_methods import cal_patk, cal_afpr, get_ytest, cal_mcc
 
@@ -57,11 +54,11 @@ def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislab
 
     # prepare optimizer and dataloader
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
-    # scheduler = ReduceLROnPlateau(optimizer, mode='max')
-    if dataset in ['Reddit2', 'ogbn-papers100M']:  # cluster data for big graph
+    scheduler = ReduceLROnPlateau(optimizer, mode='max')
+    if dataset in ['Reddit2']:  # cluster data for big graph
         # cluster_data = ClusterData(data, num_parts=1024, recursive=False)
         # train_loader = ClusterLoader(cluster_data, batch_size=batch_size, shuffle=True)
-        train_loader = GraphSAINTRandomWalkSampler(data, batch_size=batch_size, walk_length=2, num_steps=5,
+        train_loader = GraphSAINTRandomWalkSampler(data, batch_size=6000, walk_length=2, num_steps=5,
                                                    sample_coverage=100, shuffle=True)
         data_loader = NeighborLoader(copy.copy(data), input_nodes=None, num_neighbors=[-1], batch_size=batch_size,
                                      shuffle=False, num_workers=1)
@@ -80,7 +77,7 @@ def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislab
         model.load_state_dict(torch.load(trained_model_file))
     for epoch in range(n_epochs):
         model.train()
-        if dataset in ['Flickr', 'Cora', 'CiteSeer', 'PubMed', 'ogbn-arxiv']:  # small graph
+        if dataset in ['Flickr', 'Cora', 'CiteSeer', 'PubMed']:  # small graph
             data.to(device)
             optimizer.zero_grad()
             out = model(data)
@@ -148,16 +145,16 @@ def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislab
                 all_sm_vectors.append(eval_out.cpu().detach().numpy())
 
             # just try using the logit and the largest other logit
-            # all_logits = model.get_logits(data).cpu().detach().numpy()
-            # normalized_all_logits = (all_logits - all_logits.min(axis=0)) / (all_logits.max(axis=0) - all_logits.min(axis=0))
-            # all_y = data.y.cpu().detach().numpy()
-            # aum = []
-            # for i, y in enumerate(all_y):
-            #     tmp = normalized_all_logits[i]
-            #     logit = tmp[y]
-            #     np.delete(tmp, [y])
-            #     aum.append([logit, max(tmp)])
-            # all_two_logits.append(aum)
+            all_logits = model.get_logits(data).cpu().detach().numpy()
+            normalized_all_logits = (all_logits - all_logits.min(axis=0)) / (all_logits.max(axis=0) - all_logits.min(axis=0))
+            all_y = data.y.cpu().detach().numpy()
+            aum = []
+            for i, y in enumerate(all_y):
+                tmp = normalized_all_logits[i]
+                logit = tmp[y]
+                np.delete(tmp, [y])
+                aum.append([logit, max(tmp)])
+            all_two_logits.append(aum)
         # scheduler.step(cri)
 
     return np.array(all_sm_vectors), np.array(all_two_logits), to_softmax(best_sm_vectors), data.cpu().detach(), n_classes
@@ -195,10 +192,10 @@ def generate_khop_neighbor_feature(G, node, k, label_vector):
     for hop in range(k+1):
         if len(length2nb[hop]) != 0:
             feature.append(np.sum(label_vector[length2nb[hop]], axis=0) / len(length2nb[hop]))
+            # feature.append(np.sum(label_vector[length2nb[hop]], axis=0))  # unnormalize to make agg2 correct
         else:
             print("Warning: Node {} does not have {} hop neighbors!".format(node, hop))
             feature.append(np.zeros(len(label_vector[0])))
-            # feature.append(np.ones(len(label_vector[0])) / len(label_vector[0]))
     return np.array(feature)
 
 
@@ -208,105 +205,59 @@ def generate_sm_feature(idx, all_sm_vectors):
 
 def generate_new_feature(k, data, noisy_data, sample_idx, all_sm_vectors, all_two_logits, n_classes):
     print("Generating new features......")
+    # construct an undirected graph
+    G = nx.Graph()
+    for i in range(len(data.edge_index[0])):
+        G.add_edge(data.edge_index[0][i].item(), data.edge_index[1][i].item())
 
+    # get the one-hot label vector
+    label_vector = np.array([np.zeros(n_classes)] * data.num_nodes)
+    for i, y in enumerate(data.y):
+        label_vector[i][y] = 1
+
+    # combine the k-hop neighbor feature and the sm feature
+    features = [[]] * data.num_nodes
     y = np.zeros(data.num_nodes)  # 1 indicates negative / noisy
     y[sample_idx] = 1
+    ident = np.eye(n_classes)
+    for node in G.nodes():
+        khop_feature = generate_khop_neighbor_feature(G, node, k, label_vector)
+        if y[node] == 1:
+            # negative samples only modify their own feature, not features of other nodes
+            # here we modify its feature to the noisy version
+            khop_feature[0] = np.zeros_like(khop_feature[0]) + ident[noisy_data.y[node]]
+        sm_feature = generate_sm_feature(node, all_sm_vectors)
+        # features[node] = np.vstack((khop_feature, sm_feature))  # (k + No. of selected epochs, n_classes)
+        # features[node] = np.hstack((khop_feature.reshape(-1), sm_feature[-1,:].reshape(-1)))
 
-    A = torch_geometric.utils.convert.to_scipy_sparse_matrix(data.edge_index)
-    n = A.shape[0]
+        agg0 = np.sum(to_softmax(sm_feature)[-1,:] * khop_feature[0])  # softmax score for observed label
+        # agg0 = to_softmax(sm_feature)[-1,:] * khop_feature[0].reshape(-1)
+        agg1 = np.sum(khop_feature[1] * khop_feature[0])  # neighbour count for observed label
+        # agg2 = np.sum((khop_feature[1] / np.sum(khop_feature[1])) * khop_feature[0])  # fraction of neighbors with observed label
+        agg2 = np.average(all_two_logits[:,node,0] - all_two_logits[:,node,1])
+        features[node] = np.hstack((agg0, agg1))
 
-    # symmetric normalized adjacency matrix. 1e-10 is to prevent dividing by zero.
-    # print("degree matrix: ", spdiags(np.squeeze((1e-10 + np.array(A.sum(1)))**-0.5), 0, n, n))
-    S = spdiags(np.squeeze((1e-10 + np.array(A.sum(1)))**-0.5), 0, n, n) @ A @ spdiags(np.squeeze((1e-10 + np.array(A.sum(0)))**-0.5), 0, n, n)
-    S2 = S @ S
-    S3 = S @ S2
-    S2.setdiag(np.zeros((n,)))  # remove self-loops to prevent the algorithm peeking at the original label (L0)
-    S3.setdiag(np.zeros((n,)))
-    print("S calculated!")
+        # features[node] = np.hstack((agg0, agg1, agg2))
 
-    ymat = y[:, np.newaxis]
-    # print("ymat: ", ymat)
-    L0 = np.eye(n_classes)[data.y]  # original labels, converted to one-hot matrix
-    L_corr = (ymat * np.eye(n_classes)[noisy_data.y]) + (1 - ymat) * L0  # label matrix corrupted by negative samples
-    # print("L_corr:", L_corr)
-    L1 = S @ L0
-    L2 = S2 @ L0
-    L3 = S3 @ L0
-    print("L calculated!")
+        # just try using the logit and the largest other logit
+        # features[node.item()] = np.hstack((khop_feature.reshape(-1), sm_feature))
 
-    P0 = scipy.special.softmax(all_sm_vectors[-1, :, :], axis=1)  # base model softmax predictions matrix
-    P1 = S @ P0
-    P2 = S2 @ P0
-    P3 = S3 @ P0
-    print("P calculated!")
+    # deal with orphans
+    orphan_cnt = 0
+    for i,feat in enumerate(features):
+        if len(feat) == 0:
+            orphan_cnt += 1
+            print("Deal with orphan")
+            features[i] = np.zeros(2)
+            sm_feature = generate_sm_feature(i, all_sm_vectors)
+            khop_feature = label_vector[i]
+            if y[i] == 1:
+                khop_feature = np.zeros_like(khop_feature) + ident[noisy_data.y[i]]
+            features[i][0] = np.sum(to_softmax(sm_feature)[-1,:] * khop_feature)
+            print("orphan feature: ", features[i])
+    print("{} orphans in total!".format(orphan_cnt))
 
-    feat = np.hstack((
-        np.sum(L_corr * P0, axis=1, keepdims=True),  # since L_corr is one-hot, this just extracts the corresponding entry of P0
-        np.sum(L_corr * P1, axis=1, keepdims=True),
-        np.sum(L_corr * P2, axis=1, keepdims=True),
-        np.sum(L_corr * P3, axis=1, keepdims=True),
-        np.sum(L_corr * L1, axis=1, keepdims=True),
-        np.sum(L_corr * L2, axis=1, keepdims=True),
-        np.sum(L_corr * L3, axis=1, keepdims=True),
-    ))
-    return feat, y
-
-
-# def generate_new_feature(k, data, noisy_data, sample_idx, all_sm_vectors, all_two_logits, n_classes):
-#     print("Generating new features......")
-#     # construct an undirected graph
-#     G = nx.Graph()
-#     for i in range(len(data.edge_index[0])):
-#         G.add_edge(data.edge_index[0][i].item(), data.edge_index[1][i].item())
-#
-#     # get the one-hot label vector
-#     label_vector = np.array([np.zeros(n_classes)] * data.num_nodes)
-#     for i, y in enumerate(data.y):
-#         label_vector[i][y] = 1
-#
-#     # combine the k-hop neighbor feature and the sm feature
-#     features = [[]] * data.num_nodes
-#     y = np.zeros(data.num_nodes)  # 1 indicates negative / noisy
-#     y[sample_idx] = 1
-#     ident = np.eye(n_classes)
-#     for node in G.nodes():
-#         khop_feature = generate_khop_neighbor_feature(G, node, k, label_vector)
-#         if y[node] == 1:
-#             # negative samples only modify their own feature, not features of other nodes
-#             # here we modify its feature to the noisy version
-#             khop_feature[0] = np.zeros_like(khop_feature[0]) + ident[noisy_data.y[node]]
-#         sm_feature = generate_sm_feature(node, all_sm_vectors)
-#         # features[node] = np.vstack((khop_feature, sm_feature))  # (k + No. of selected epochs, n_classes)
-#         # features[node] = np.hstack((khop_feature.reshape(-1), sm_feature[-1,:].reshape(-1)))
-#
-#         agg0 = np.sum(to_softmax(sm_feature)[-20:0,:] * khop_feature[0], axis=1)  # softmax score for observed label
-#         # agg0 = to_softmax(sm_feature)[-1,:] * khop_feature[0].reshape(-1)
-#         agg1 = np.sum(khop_feature[1:,:] * khop_feature[0], axis=1)  # neighbour count for observed label
-#         # agg2 = np.sum((khop_feature[1] / np.sum(khop_feature[1])) * khop_feature[0])  # fraction of neighbors with observed label
-#         agg2 = np.average(all_two_logits[:,node,0] - all_two_logits[:,node,1])
-#         features[node] = np.hstack((agg0, agg1))
-#
-#         # features[node] = np.hstack((agg0, agg1, agg2))
-#
-#         # just try using the logit and the largest other logit
-#         # features[node.item()] = np.hstack((khop_feature.reshape(-1), sm_feature))
-#
-#     # deal with orphans
-#     orphan_cnt = 0
-#     for i,feat in enumerate(features):
-#         if len(feat) == 0:
-#             orphan_cnt += 1
-#             print("Deal with orphan")
-#             features[i] = np.zeros(2)
-#             sm_feature = generate_sm_feature(i, all_sm_vectors)
-#             khop_feature = label_vector[i]
-#             if y[i] == 1:
-#                 khop_feature = np.zeros_like(khop_feature) + ident[noisy_data.y[i]]
-#             features[i][0] = np.sum(to_softmax(sm_feature)[-1,:] * khop_feature)
-#             print("orphan feature: ", features[i])
-#     print("{} orphans in total!".format(orphan_cnt))
-#
-#     return np.array(features), y
+    return np.array(features), y
 
 
 class myMLP(torch.nn.Module):
@@ -315,8 +266,7 @@ class myMLP(torch.nn.Module):
         self.mlp = MLP(channel_list=channel_list, dropout=dropout, relu_first=relu_first, batch_norm=True)
 
     def forward(self, data):
-        f = self.mlp(data)
-        y = F.softmax(f, dim=1)
+        y = self.mlp(data)
         return y
 
 
@@ -324,7 +274,7 @@ if __name__ == "__main__":
     setup_seed(1119)
 
     parser = argparse.ArgumentParser(description="Our Approach")
-    parser.add_argument("--dataset", type=str, default='Cora')  # Reddit2 not usable currently
+    parser.add_argument("--dataset", type=str, default='Cora')
     parser.add_argument("--data_dir", type=str, default='./dataset')
     parser.add_argument("--mislabel_rate", type=float, default=0.1)
     parser.add_argument("--noise_type", type=str, default='symmetric')
@@ -334,8 +284,8 @@ if __name__ == "__main__":
     parser.add_argument("--classifier", type=str, default='MLP')
     parser.add_argument("--held_split", type=str, default='valid')
     parser.add_argument("--test_target", type=str, default='test')
-    parser.add_argument("--n_epochs", type=int, default=200, help='Planetoid:200; ogbn-arxiv:500')
-    parser.add_argument("--lr", type=float, default=0.001, help='Planetoid:0.001; ogbn-arxiv:0.001')
+    parser.add_argument("--n_epochs", type=int, default=200)
+    parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument('--weight_decay', type=float, default=0.0005)
     parser.add_argument('--k', type=int, default=1)
     parser.add_argument('--validation', type=bool, default=True)
@@ -346,7 +296,7 @@ if __name__ == "__main__":
         (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.batch_size, args.lr,
          args.weight_decay)
     ensure_dir('mislabel_results')
-    mislabel_result_file = 'mislabel_results/validl1-laplacian-test={}-{}-{}-{}-mislabel={}-{}-sample={}-k={}-epochs={}-' \
+    mislabel_result_file = 'mislabel_results/constrainMLP-newfeatnokhop-test={}-{}-{}-{}-mislabel={}-{}-sample={}-k={}-epochs={}-' \
                            'lr={}-wd={}'.format(args.test_target, args.classifier, args.dataset, args.model,
                                                 args.mislabel_rate, args.noise_type, args.sample_rate, args.k,
                                                 args.n_epochs, args.lr, args.weight_decay)
@@ -365,15 +315,15 @@ if __name__ == "__main__":
     print("Noise Matrix (p(s|y)): ")
     print(noise_matrix)
     plt.figure()
-    sns.heatmap(noise_matrix.T, cmap='PuBu', vmin=0, vmax=1, linewidth=1, annot=n_classes < 10)
+    sns.heatmap(noise_matrix.T, cmap='PuBu', vmin=0, vmax=1, linewidth=1, annot=True)
     plt.title('Learned Noise Transition Matrix')
     plt.savefig('val_Noise_Matrix_'+args.dataset+'_'+args.noise_type+'_'+str(args.mislabel_rate)+'_'+args.model+'.jpg',
                 bbox_inches='tight')
-    # plt.show()
+    plt.show()
     ##
     # matrix_name = 'GT_Noise_Matrix_' + args.dataset + '_' + args.noise_type + '_' + str(args.mislabel_rate)
     # noise_matrix = np.load(matrix_name + '.npy')
-    # sns.heatmap(noise_matrix.T, cmap='PuBu', vmin=0, vmax=1, linewidth=1, annot=args.dataset not in ['Reddit2'])
+    # sns.heatmap(noise_matrix.T, cmap='PuBu', vmin=0, vmax=1, linewidth=1, annot=True)
     # plt.title('Oracle Noise Transition Matrix')
     # plt.show()
     # print("Oracle")
@@ -389,6 +339,8 @@ if __name__ == "__main__":
     #                                                               args.weight_decay, trained_model_file,
     #                                                               args.mislabel_rate, args.noise_type, args.batch_size,
     #                                                               noisy_data)
+    # print("old sm: ", old_all_sm_vectors)
+    # print("new sm: ", new_all_sm_vectors)
     # all_sm_vectors = np.vstack((old_all_sm_vectors, new_all_sm_vectors))
     features, y = generate_new_feature(args.k, data, noisy_data, tr_sample_idx, old_all_sm_vectors, all_two_logits, n_classes)
     X_train = features[data.held_mask].reshape(features[data.held_mask].shape[0], -1)
@@ -425,14 +377,17 @@ if __name__ == "__main__":
         X_train = torch.from_numpy(X_train).float().to(device)
         y_train = torch.from_numpy(y_train).long().to(device)
         classifier.to(device)
-        optimizer = torch.optim.Adam(classifier.parameters(), lr=0.001, weight_decay=args.weight_decay)
-        for epoch in range(500):
+        optimizer = torch.optim.Adam(classifier.parameters(), lr=0.01, weight_decay=args.weight_decay)
+        for epoch in range(500):  #500
             classifier.train()
             optimizer.zero_grad()
             out = classifier(X_train)
-            loss = torch.nn.L1Loss()(out[:, 1], y_train.float())
-            # loss = F.nll_loss(torch.log(out), y_train)
-            acc = accuracy_score(y_train.cpu().detach().numpy(), out.cpu().detach().numpy()[:, 1] > .5)
+            out = torch.sigmoid(torch.sum(X_train * out, axis=1))
+            prob = torch.stack((1-out, out), axis=1)
+            #print("prob: ", prob)
+            loss = F.nll_loss(torch.log(prob), y_train)
+            acc = accuracy_score(y_train.cpu().detach().numpy(), out.cpu().detach().numpy() > .5)
+            # te_acc = accuracy_score(y_train, out.cpu().detach().numpy()[:, 1] > .5)
             print("Epoch[{}] Tr Loss: {:.2f} Acc: {:.2f}".format(epoch + 1, loss, acc))
             writer.add_scalar("MLP_training/loss", loss, epoch)
             loss.backward()
@@ -444,11 +399,11 @@ if __name__ == "__main__":
         probs = classifier.predict_proba(X_test)[:, 1]
     else:
         classifier.eval()
-        probs = classifier(X_train).cpu().detach().numpy()[:, 1]
+        probs = torch.sigmoid(torch.sum(classifier(X_train)*X_train, axis=1)).cpu().detach().numpy()
         roc_auc = roc_auc_score(y_train.cpu().detach().numpy(), probs)
         print("ROC AUC Score on Training set: {:.2f}".format(roc_auc))
         X_test = torch.from_numpy(X_test).float().to(device)
-        probs = classifier(X_test).cpu().detach().numpy()[:, 1]
+        probs = torch.sigmoid(torch.sum(classifier(X_test)*X_test, axis=1)).cpu().detach().numpy()
     print("Saving result......")
     idx2prob = dict(zip([i for i in range(len(probs))], probs))
     result = probs > 0.5
@@ -466,9 +421,3 @@ if __name__ == "__main__":
     cal_afpr(result, ytest)
     roc_auc = roc_auc_score(ytest, probs)
     print("ROC AUC Score on Test set: {:.2f}".format(roc_auc))
-
-    fpr, tpr, thresholds = roc_curve(ytest, probs)
-    plt.plot(fpr, tpr)
-    plt.xlabel("FPR")
-    plt.ylabel("TPR")
-    # plt.show()

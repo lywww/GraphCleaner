@@ -1,6 +1,9 @@
 /.idea
+/.vscode
 /NeighborAgg
 /SAGN_with_SLE
+/Images
+/temporay_trash
 *.jpg
 tensorboard_logs/MLP-Cora-GCN-mislabel=0.1-symmetric-sample=0.5-k=1-epochs=500-lr=0.001-wd=0.0005/events.out.tfevents.1643365200.b9be05a5cf23
 tensorboard_logs/MLP-Cora-GCN-mislabel=0.1-symmetric-sample=0.5-k=1-epochs=500-lr=0.001-wd=0.0005/events.out.tfevents.1643365255.b9be05a5cf23

@@ -1,31 +1,16 @@
-import os
-import random
 import argparse
 import scipy.stats as stats
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, matthews_corrcoef
 
 import torch
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau
 
-from run_GNNs import GCN, myGIN, GAT, to_softmax, get_data
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, matthews_corrcoef
-
-
-def setup_seed(seed):
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-
-def ensure_dir(path):
-    if not os.path.exists(path):
-        os.makedirs(path)
+from GNN_models import GCN, myGIN, GAT, baseMLP
+from Utils import setup_seed, ensure_dir, get_data
 
 
 def weighted_mean(x, w):
@@ -160,7 +145,7 @@ def compute_probabilities_batch(batch_losses, bmm_model, bmm_model_maxLoss, bmm_
     return B
 
 
-def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislabel_rate, noise_type):
+def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislabel_rate, noise_type, test_target):
     # prepare data
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print("Device: ", device)
@@ -176,6 +161,8 @@ def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislab
         model = myGIN(in_channels=n_features, hidden_channels=256, out_channels=n_classes)
     elif model_name == 'GAT':
         model = GAT(in_channels=n_features, hidden_channels=256, out_channels=n_classes)
+    elif model_name == 'MLP':
+        model = baseMLP([n_features, 256, n_classes])
     model.to(device)
     print("Model: ", model)
 
@@ -211,7 +198,16 @@ def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislab
             bmm_model, bmm_model_maxLoss, bmm_model_minLoss = track_training_loss(device, all_losses)
             val_losses = F.nll_loss(eval_out[data.val_mask], data.y[data.val_mask], reduction='none')
             B = compute_probabilities_batch(val_losses, bmm_model, bmm_model_maxLoss, bmm_model_minLoss)
-        scheduler.step(cri)
+        # scheduler.step(cri)
+
+    # look up test_target probabilities
+    model.eval()
+    eval_out = model(data)
+    if test_target == 'valid':
+        losses = F.nll_loss(eval_out[data.val_mask], data.y[data.val_mask], reduction='none')
+    else:
+        losses = F.nll_loss(eval_out[data.test_mask], data.y[data.test_mask], reduction='none')
+    B = compute_probabilities_batch(losses, bmm_model, bmm_model_maxLoss, bmm_model_minLoss)
     return B
 
 
@@ -228,6 +224,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument('--weight_decay', type=float, default=0.0005)
     parser.add_argument('--validation', type=bool, default=True)
+    parser.add_argument("--test_target", type=str, default='test')
     args = parser.parse_args()
 
     ensure_dir('tensorboard_logs')
@@ -240,11 +237,13 @@ if __name__ == "__main__":
     gnn_result_file = 'gnn_results/{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
         (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
     ensure_dir('mislabel_results')
-    mislabel_result_file = 'mislabel_results/validation-DYB-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
-        (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
+    # mislabel_result_file = 'mislabel_results/validation-DYB-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
+    #     (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
+    mislabel_result_file = 'mislabel_results/DYB-test={}-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
+        (args.test_target, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
 
     B = train_GNNs(args.model, args.dataset, args.n_epochs, args.lr, args.weight_decay, trained_model_file,
-                   args.mislabel_rate, args.noise_type)
+                   args.mislabel_rate, args.noise_type, args.test_target)
 
     print('B: ', B)
     result = B > 0.5

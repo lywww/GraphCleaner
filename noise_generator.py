@@ -16,8 +16,12 @@ dataset2classes = {'Flickr': 7, 'Reddit2': 41, 'Cora': 7, 'CiteSeer': 6, 'PubMed
 
 def generate_noise(args):
     print("Loading {}...".format(args.dataset))
-    if args.dataset == 'ogbn-papers100M':  # haven't completed, require modification when used
+    if args.dataset in ['ogbn-arxiv', 'ogbn-papers100M']:
+        # ogbn-arxiv: Data(edge_index=[2, 1166243], x=[169343, 128], node_year=[169343, 1], y=[169343, 1])
+        # ogbn-papers100M: Data(edge_index=[2, 1615685872], x=[111059956, 128], node_year=[111059956, 1], y=[111059956, 1])
         dataset = PygNodePropPredDataset(name=args.dataset, root=args.data_dir)
+        dataset_name = args.dataset[:4] + '_' + args.dataset[5:]
+        data = dataset[0]
         n_classes = dataset.num_classes
         split_idx = dataset.get_idx_split()
         train_idx, valid_idx, test_idx = split_idx["train"].numpy().tolist(), split_idx["valid"].numpy().tolist(), \
@@ -26,22 +30,66 @@ def generate_noise(args):
               (len(train_idx), len(valid_idx), len(test_idx)))
 
         print("Choosing samples with mislabelling rate {}...".format(args.mislabel_rate))
-        train_sample_idx = random.sample(train_idx, np.round(args.mislabel_rate * len(train_idx)))
-        valid_sample_idx = random.sample(valid_idx, np.round(args.mislabel_rate * len(valid_idx)))
+        tr_label_data = dict(zip(range(n_classes), [[] for _ in range(n_classes)]))
+        va_label_data = dict(zip(range(n_classes), [[] for _ in range(n_classes)]))
+        te_label_data = dict(zip(range(n_classes), [[] for _ in range(n_classes)]))
+        for idx in train_idx:
+            tr_label_data[data.y[idx].item()].append(idx)
+        for idx in valid_idx:
+            va_label_data[data.y[idx].item()].append(idx)
+        for idx in test_idx:
+            te_label_data[data.y[idx].item()].append(idx)
+        samples = []
+        for k, v in tr_label_data.items():
+            samples += list(np.random.choice(v, size=int(len(v) * args.mislabel_rate), replace=False))
+        for k, v in va_label_data.items():
+            samples += list(np.random.choice(v, size=int(len(v) * args.mislabel_rate), replace=False))
+        for k, v in te_label_data.items():
+            samples += list(np.random.choice(v, size=int(len(v) * args.mislabel_rate), replace=False))
 
-        print("Changing the label of samples symmetrically...")
-        label_dir = os.path.join(args.data_dir, args.dataset, 'raw')
-        label_file = np.load(os.path.join(label_dir, 'node-label.npz'))  # need modification if ogbn-arxiv
-        for idx in train_sample_idx + valid_sample_idx:
-            new_label = random.randint(0, n_classes-1)  # label: 0-171
-            label = label_file['node_label'][idx]
-            if new_label < label:
-                label_file['node_label'][idx] = new_label
-            else:
-                label_file['node_label'][idx] = new_label + 1
-        np.save(os.path.join(label_dir, 'corrupted-node-label.npz'), label_file)
+        noisy_class_map = dict(zip(range(len(data.y)), [y.item() for y in data.y]))
+        if args.noise_type == 'symmetric':
+            print("Changing the label of samples symmetrically...")
+            for sample in samples:
+                ori_label = noisy_class_map[sample]
+                labels = [i for i in range(n_classes)]
+                labels.remove(ori_label)
+                noisy_label = np.random.choice(a=labels, size=1, replace=False)
+                noisy_class_map[sample] = int(noisy_label[0])
+        else:
+            print("Changing the label of samples asymmetrically...")
+            for sample in samples:
+                ori_label = noisy_class_map[sample]
+                if ori_label == n_classes - 1:
+                    noisy_label = 0
+                else:
+                    noisy_label = ori_label + 1
+                noisy_class_map[sample] = noisy_label
 
-    elif args.dataset == 'Flickr' or args.dataset == 'Reddit2':
+        print("Saving the noisy label...")
+        with open(os.path.join('./dataset', dataset_name, 'raw/noisy_class_map_' + args.noise_type + '_' +
+                                                          str(args.mislabel_rate) + '.json'), 'w') as f:
+            json.dump(noisy_class_map, f)
+
+        print("Drawing the noise transition matrix...")
+        real_transit = np.zeros((n_classes, n_classes))
+        for k, v in enumerate(data.y):
+            if k in train_idx:
+                try:
+                    real_transit[int(v.item())][int(noisy_class_map[k])] += 1
+                except:
+                    print("v: ", v)
+                    print("noisy_class_map[k]: ", noisy_class_map[k])
+        real_transit = real_transit / np.sum(real_transit, axis=1).reshape(-1, 1)
+        plt.figure()
+        sns.heatmap(real_transit, cmap='PuBu', vmin=0, vmax=1, linewidth=1, annot=False)
+        plt.title('Groundtruth Noise Transition Matrix')
+        matrix_name = 'GT_Noise_Matrix_' + dataset_name + '_' + args.noise_type + '_' + str(args.mislabel_rate)
+        plt.savefig(matrix_name + '.jpg', bbox_inches='tight')
+        plt.show()
+        np.save(matrix_name + '.npy', real_transit.T)
+
+    elif args.dataset in ['Flickr', 'Reddit2']:
         n_classes = dataset2classes[args.dataset]
         dir = os.path.join('./dataset', args.dataset, 'raw')
         with open(os.path.join(dir, 'class_map.json'), 'r') as f:
@@ -98,13 +146,13 @@ def generate_noise(args):
             real_transit[class_map[str(k)]][noisy_class_map[str(k)]] += 1
         real_transit = real_transit / np.sum(real_transit, axis=1).reshape(-1, 1)
         plt.figure()
-        sns.heatmap(real_transit, cmap='PuBu', vmin=0, vmax=1, linewidth=1, annot=True)
+        sns.heatmap(real_transit, cmap='PuBu', vmin=0, vmax=1, linewidth=1, annot=False)
         plt.title('Groundtruth Noise Transition Matrix')
         plt.savefig('GT_Noise_Matrix_' + args.dataset + '_' + args.noise_type + '_' + str(args.mislabel_rate) + '.jpg',
                     bbox_inches='tight')
         plt.show()
 
-    elif args.dataset == 'Cora' or args.dataset == 'CiteSeer' or args.dataset == 'PubMed':
+    elif args.dataset in ['Cora', 'CiteSeer', 'PubMed']:
         dataset = Planetoid(root='./dataset', name=args.dataset)
         data = dataset[0]
         n_classes = dataset2classes[args.dataset]

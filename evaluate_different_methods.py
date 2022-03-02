@@ -6,9 +6,10 @@ import pandas as pd
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, matthews_corrcoef, roc_auc_score
 
 from torch_geometric.datasets import Planetoid
+from ogb.nodeproppred import PygNodePropPredDataset
 
 
-def get_ytest(dataset, noise_type, mislabel_rate, validation):
+def get_ytest(dataset, noise_type, mislabel_rate, target_set):
     # get y_test ( 1 indicates noisy / wrong label)
     if dataset == 'Flickr':
         class_map = './dataset/Flickr/raw/class_map.json'
@@ -22,10 +23,12 @@ def get_ytest(dataset, noise_type, mislabel_rate, validation):
         with open(role, 'r') as f:
             role = json.load(f)
         tr_mask = np.zeros(len(class_map), dtype=bool)
-        if validation:
+        if target_set == 'valid':
             tr_mask[role['va']] = True
-        else:
+        elif target_set == 'train':
             tr_mask[role['tr']] = True
+        else:
+            tr_mask[role['te']] = True
         origin_class = np.array(list(class_map.values()))[tr_mask]
         noisy_class = np.array(list(noisy_class_map.values()))[tr_mask]
         y_test = origin_class != noisy_class
@@ -36,11 +39,25 @@ def get_ytest(dataset, noise_type, mislabel_rate, validation):
                           str(mislabel_rate) + '.json'
         with open(noisy_class_map, 'r') as f:
             noisy_class_map = json.load(f)
-        if validation:
+        if target_set == 'valid':
             mask = data.val_mask
-        else:
+        elif target_set == 'train':
             mask = data.train_mask
+        else:
+            mask = data.test_mask
         origin_class = np.array(list(data.y))[mask]
+        noisy_class = np.array(list(noisy_class_map.values()))[mask]
+        y_test = origin_class != noisy_class
+    elif dataset in ['ogbn-arxiv']:
+        noisy_class_map = './dataset/' + dataset.replace('-', '_') + '/raw/' + 'noisy_class_map_' + noise_type + '_' + \
+                          str(mislabel_rate) + '.json'
+        dataset = PygNodePropPredDataset(name=dataset, root='./dataset')
+        split_idx = dataset.get_idx_split()
+        mask = split_idx[target_set]
+        data = dataset[0]
+        with open(noisy_class_map, 'r') as f:
+            noisy_class_map = json.load(f)
+        origin_class = np.array(list(data.y.squeeze()))[mask]
         noisy_class = np.array(list(noisy_class_map.values()))[mask]
         y_test = origin_class != noisy_class
     return y_test
@@ -101,10 +118,11 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument('--weight_decay', type=float, default=0.0005)
     parser.add_argument('--validation', type=bool, default=True)
+    parser.add_argument("--test_target", type=str, default='test')
     args = parser.parse_args()
 
     # get y_test ( 1 indicates noisy / wrong label)
-    y_test = get_ytest(args.dataset, args.noise_type, args.mislabel_rate, args.validation)
+    y_test = get_ytest(args.dataset, args.noise_type, args.mislabel_rate, args.test_target)
 
     for m in args.method.split('+'):
         if m == '':
@@ -126,16 +144,19 @@ if __name__ == "__main__":
         #     print("Evaluate baseline_cl_both...")
         #     cal_afpr(np.array(mislabel_result['baseline_cl_both']), y_test)
         # elif m == 'baseline' or m == 'AUM':
-        if args.validation:
-            mislabel_result_file = 'mislabel_results/validation-{}-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
-            (m, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr,
+        # if args.validation:
+        #     mislabel_result_file = 'mislabel_results/validation-{}-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
+        #     (m, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr,
+        #      args.weight_decay)
+        # else:
+        #     mislabel_result_file = 'mislabel_results/{}-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
+        #         (m, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr,
+        #          args.weight_decay)
+        mislabel_result_file = 'mislabel_results/{}-test={}-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
+            (m, args.test_target, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr,
              args.weight_decay)
-        else:
-            mislabel_result_file = 'mislabel_results/{}-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
-                (m, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr,
-                 args.weight_decay)
         if m == 'ours':
-            mislabel_result_file = 'mislabel_results/{}-{}-{}-mislabel={}-{}-sample={}-k={}-epochs={}-lr={}-wd={}'.\
+            mislabel_result_file = 'mislabel_results/valtr-newloss-{}-{}-{}-mislabel={}-{}-sample={}-k={}-epochs={}-lr={}-wd={}'.\
                 format(args.classifier, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.sample_rate,
                        args.k, args.n_epochs, args.lr, args.weight_decay)
         mislabel_result_file += '.csv'
