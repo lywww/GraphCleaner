@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau
 
-from GNN_models import GCN, myGIN, GAT, baseMLP
+from GNN_models import GCN, myGIN, GAT, baseMLP, myGraphUNet
 from Utils import setup_seed, ensure_dir, get_data
 
 
@@ -163,6 +163,8 @@ def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislab
         model = GAT(in_channels=n_features, hidden_channels=256, out_channels=n_classes)
     elif model_name == 'MLP':
         model = baseMLP([n_features, 256, n_classes])
+    elif model_name == 'GraphUNet':
+        model = myGraphUNet(in_channels=n_features, hidden_channels=16, out_channels=n_classes)
     model.to(device)
     print("Model: ", model)
 
@@ -189,7 +191,7 @@ def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislab
         if cri > best_cri:
             print("New Best Criterion: {:.2f}".format(cri))
             best_cri = cri
-            torch.save(model.state_dict(), trained_model_file)
+            # torch.save(model.state_dict(), trained_model_file)
 
             all_losses = F.nll_loss(eval_out[data.train_mask], data.y[data.train_mask], reduction='none')
             # all_probs = out
@@ -215,6 +217,7 @@ if __name__ == "__main__":
     setup_seed(1119)
 
     parser = argparse.ArgumentParser(description="DY-Bootstrap")
+    parser.add_argument("--exp", type=int, default=0)
     parser.add_argument("--dataset", type=str, default='Flickr')
     parser.add_argument("--data_dir", type=str, default='./dataset')
     parser.add_argument("--mislabel_rate", type=float, default=0.1)
@@ -228,19 +231,19 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     ensure_dir('tensorboard_logs')
-    log_dir = 'tensorboard_logs/{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
-        (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
+    log_dir = 'tensorboard_logs/{}-{}-mislabel={}-{}-epochs={}-lr={}-wd={}-exp={}'.format \
+        (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay, args.exp)
     ensure_dir('checkpoints')
-    trained_model_file = 'checkpoints/{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
-        (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
+    trained_model_file = 'checkpoints/{}-{}-mislabel={}-{}-epochs={}-lr={}-wd={}-exp={}'.format \
+        (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay, args.exp)
     ensure_dir('gnn_results')
-    gnn_result_file = 'gnn_results/{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
-        (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
+    gnn_result_file = 'gnn_results/{}-{}-mislabel={}-{}-epochs={}-lr={}-wd={}-exp={}'.format \
+        (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay, args.exp)
     ensure_dir('mislabel_results')
     # mislabel_result_file = 'mislabel_results/validation-DYB-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
     #     (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
-    mislabel_result_file = 'mislabel_results/DYB-test={}-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
-        (args.test_target, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
+    mislabel_result_file = 'mislabel_results/DYB-test={}-{}-{}-mislabel={}-{}-epochs={}-lr={}-wd={}-exp={}'.format \
+        (args.test_target, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay, args.exp)
 
     B = train_GNNs(args.model, args.dataset, args.n_epochs, args.lr, args.weight_decay, trained_model_file,
                    args.mislabel_rate, args.noise_type, args.test_target)

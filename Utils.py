@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 
 import torch
-from torch_geometric.datasets import Flickr, Planetoid, Reddit2
+from torch_geometric.datasets import Flickr, Planetoid, Reddit2, Amazon
 from ogb.nodeproppred import PygNodePropPredDataset
 
 try:
@@ -15,10 +15,10 @@ except ImportError:
 
 
 def setup_seed(seed):
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    # np.random.seed(seed)
+    # random.seed(seed)
+    # torch.manual_seed(seed)
+    # torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
@@ -48,9 +48,27 @@ def get_data(dataset, noise_type='symmetric', mislabel_rate=0, special_set=None)
         # data.train_mask = torch.from_numpy(train_mask)
         print("number of training samples in get_data: ", sum(data.train_mask))
 
+    elif dataset in ['Computers', 'Photo']:
+        dir = os.path.join('./dataset/Amazon', dataset)
+        data = Amazon(root='./dataset/Amazon', name=dataset)
+        n_classes = data.num_classes
+        data = data[0]
+        length = len(data.y)
+        train_mask = np.ones(length)
+        train_mask[int(0.6 * length):] = 0
+        val_mask = np.zeros(length)
+        val_mask[int(0.6 * length):int(0.8 * length)] = 1
+        test_mask = np.zeros(length)
+        test_mask[int(0.8 * length):] = 1
+        data.train_mask = torch.from_numpy(train_mask).bool()
+        data.val_mask = torch.from_numpy(val_mask).bool()
+        data.test_mask = torch.from_numpy(test_mask).bool()
+        print("number of training samples in get_data: ", sum(data.train_mask))
+
     elif dataset in ['ogbn-arxiv', 'ogbn-papers100M']:
+        dir = os.path.join('/data/yuwen/', dataset)
         dir = dir.replace('-', '_')
-        data = PygNodePropPredDataset(name=dataset, root='./dataset')
+        data = PygNodePropPredDataset(name=dataset, root='/data/yuwen/')
         split_idx = data.get_idx_split()
         n_classes = data.num_classes
         data = data[0]

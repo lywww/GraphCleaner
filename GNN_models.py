@@ -1,6 +1,6 @@
 import torch
-from torch_geometric.nn.conv import GCNConv, SAGEConv, GATConv
-from torch_geometric.nn.models import GIN, MLP
+from torch_geometric.nn.conv import GCNConv, SAGEConv, GATConv, GATv2Conv
+from torch_geometric.nn.models import GIN, MLP, GraphUNet, GAT
 import torch.nn.functional as F
 
 
@@ -78,37 +78,56 @@ class myGIN(torch.nn.Module):
         return x
 
 
-class GAT(torch.nn.Module):
+class myGAT(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels):
         super().__init__()
-        self.conv1 = GATConv(in_channels, hidden_channels)
-        self.conv2 = GATConv(hidden_channels, hidden_channels)
-        self.conv3 = GATConv(hidden_channels, out_channels)
+        # self.conv1 = GATConv(in_channels, hidden_channels, dropout=0.5)
+        # self.conv2 = GATConv(hidden_channels, out_channels, dropout=0.5)
+        # self.conv3 = GATConv(hidden_channels, out_channels,dropout=0.5)
+        self.gat = GAT(in_channels=in_channels, hidden_channels=hidden_channels, num_layers=3, out_channels=out_channels)
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
 
-        x = self.conv1(x, edge_index)
-        x = F.relu(x)
-        x = F.dropout(x, training=self.training)
-        x = self.conv2(x, edge_index)
-        x = F.relu(x)
-        x = F.dropout(x, training=self.training)
-        x = self.conv3(x, edge_index)
+        # x = self.conv1(x, edge_index)
+        # x = F.relu(x)
+        # x = F.dropout(x, training=self.training)
+        # x = self.conv2(x, edge_index)
+        # x = F.relu(x)
+        # x = F.dropout(x, training=self.training)
+        # x = self.conv3(x, edge_index)
 
+        x = self.gat(x, edge_index)
         return F.log_softmax(x, dim=1)
 
     def get_logits(self, data):
         x, edge_index = data.x, data.edge_index
 
-        x = self.conv1(x, edge_index)
-        x = F.relu(x)
-        x = F.dropout(x, training=self.training)
-        x = self.conv2(x, edge_index)
-        x = F.relu(x)
-        x = F.dropout(x, training=self.training)
-        x = self.conv3(x, edge_index)
+        # x = self.conv1(x, edge_index)
+        # x = F.relu(x)
+        # x = F.dropout(x, training=self.training)
+        # x = self.conv2(x, edge_index)
+        # x = F.relu(x)
+        # x = F.dropout(x, training=self.training)
+        # x = self.conv3(x, edge_index)
 
+        x = self.gat(x, edge_index)
+        return x
+
+
+class myGraphUNet(torch.nn.Module):
+    def __init__(self, in_channels, hidden_channels, out_channels, depth=1):
+        super().__init__()
+        self.graphunet = GraphUNet(in_channels=in_channels, hidden_channels=hidden_channels, out_channels=out_channels, depth=depth)
+
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        x = self.graphunet(x, edge_index)
+        return F.log_softmax(x, dim=1)
+
+    def get_logits(self, data):
+        x, edge_index = data.x, data.edge_index
+        x = self.graphunet(x, edge_index)
         return x
 
 

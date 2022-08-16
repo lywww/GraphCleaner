@@ -154,71 +154,41 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # get y_test ( 1 indicates noisy / wrong label)
-    y_test = get_ytest(args.dataset, args.noise_type, args.mislabel_rate, args.test_target)
+    # y_test = get_ytest(args.dataset, args.noise_type, args.mislabel_rate, args.test_target)
 
-    for m in args.method.split('+'):
-        if m == '':
-            break
+    ans = []
+    for noise_type in ["symmetric", "asymmetric"]:
+        for choice in ["noCL", "lbonly", "nbonly", "ori"]:
+            tmp = []
+            for dataset in ["Cora", "Computers", "ogbn-arxiv"]:
+                y_test = get_ytest(dataset, noise_type, 0.1, args.test_target)
+                F1, MCC, P = [], [], []
+                for run in range(10):
+                    if choice == "ori":
+                        mislabel_result_file = 'mislabel_results/validl1-laplacian-test=test-MLP-{}-{}-mislabel={}-{}-sample=0.5-k={}-epochs=200-' \
+                                               'lr=0.001-wd=0.0005-exp={}'.format(dataset, "GCN", 0.1, noise_type, args.k, run)
+                    elif choice == "noCL":
+                        mislabel_result_file = 'mislabel_results/validl1-noCL-laplacian-test=test-MLP-{}-{}-mislabel={}-{}-sample=0.5-k={}-epochs=200-' \
+                                               'lr=0.001-wd=0.0005-exp={}'.format(dataset, "GCN", 0.1, noise_type,
+                                                                                  args.k, run)
+                    elif choice == "lbonly":
+                        mislabel_result_file = 'mislabel_results/validl1-laplacian-test=test-MLP-{}-{}-mislabel={}-{}-sample=0.5-k={}-epochs=200-' \
+                                               'lr=0.001-wd=0.0005-lbonly-exp={}'.format(dataset, "GCN", 0.1, noise_type,
+                                                                                  args.k, run)
+                    else:
+                        mislabel_result_file = 'mislabel_results/validl1-laplacian-test=test-MLP-{}-{}-mislabel={}-{}-sample=0.5-k={}-epochs=200-' \
+                                               'lr=0.001-wd=0.0005-nbonly-exp={}'.format(dataset, "GCN", 0.1, noise_type,
+                                                                                  args.k, run)
+                    mislabel_result_file += '.csv'
+                    mislabel_result = pd.read_csv(mislabel_result_file)
+                    print("Evaluate ", choice)
+                    F1.append(cal_afpr(np.array(mislabel_result['result']), y_test))
+                    MCC.append(cal_mcc(np.array(mislabel_result['result']), y_test))
+                    P.append(cal_patk(np.array(mislabel_result['ordered_errors']), y_test))
 
-        # if m == 'CL':
-        #     mislabel_result_file = 'mislabel_results/{}-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
-        #         (m, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
-        #     mislabel_result_file += '.csv'
-        #     mislabel_result = pd.read_csv(mislabel_result_file)
-        #     print("Evaluate baseline_conf_joint_only...")
-        #     cal_afpr(np.array(mislabel_result['baseline_conf_joint_only']), y_test)
-        #     print("Evaluate baseline_argmax...")
-        #     cal_afpr(np.array(mislabel_result['baseline_argmax']), y_test)
-        #     print("Evaluate baseline_cl_pbc...")
-        #     cal_afpr(np.array(mislabel_result['baseline_cl_pbc']), y_test)
-        #     print("Evaluate baseline_cl_pbnr...")
-        #     cal_afpr(np.array(mislabel_result['baseline_cl_pbnr']), y_test)
-        #     print("Evaluate baseline_cl_both...")
-        #     cal_afpr(np.array(mislabel_result['baseline_cl_both']), y_test)
-        # elif m == 'baseline' or m == 'AUM':
-        # if args.validation:
-        #     mislabel_result_file = 'mislabel_results/validation-{}-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
-        #     (m, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr,
-        #      args.weight_decay)
-        # else:
-        #     mislabel_result_file = 'mislabel_results/{}-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
-        #         (m, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr,
-        #          args.weight_decay)
-        F1, MCC, P = [], [], []
-        if args.exp == -1:
-            runs = [i for i in range(10)]
-        else:
-            runs = [args.exp]
-        for run in runs:
-            mislabel_result_file = 'mislabel_results/{}-test={}-{}-{}-mislabel={}-{}-epochs={}-lr={}-wd={}-exp={}'.format \
-                (m, args.test_target, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr,
-                 args.weight_decay, run)
-            if m == 'ours':
-                mislabel_result_file = 'mislabel_results/validl1-noCL-laplacian-test=test-MLP-{}-GCN-mislabel={}-{}-sample=0.5-k={}-epochs=200-' \
-                                       'lr=0.001-wd=0.0005-exp={}'.format(args.dataset, args.mislabel_rate, args.noise_type, args.k, run)
-                # mislabel_result_file = 'mislabel_results/validl1-laplacian-test={}-{}-{}-{}-mislabel={}-{}-sample={}-k={}-epochs={}-' \
-                #            'lr={}-wd={}-exp={}'.format(args.test_target, args.classifier, args.dataset, args.model,
-                #                                 args.mislabel_rate, args.noise_type, args.sample_rate, args.k,
-                #                                 args.n_epochs, args.lr, args.weight_decay, run)
-            mislabel_result_file += '.csv'
-            mislabel_result = pd.read_csv(mislabel_result_file)
-            print("Evaluate ", m)
-            F1.append(cal_afpr(np.array(mislabel_result['result']), y_test))
-            MCC.append(cal_mcc(np.array(mislabel_result['result']), y_test))
-            P.append(cal_patk(np.array(mislabel_result['ordered_errors']), y_test))
+                tmp.append(np.mean(F1))
+                tmp.append(np.mean(MCC))
+                tmp.append(np.mean(P))
+            ans.append(tmp)
 
-            if m in ['DYB', 'ours']:
-                cal_auc(y_test, np.array(mislabel_result['score']))
-            if m in ['AUM']:
-                cal_auc(y_test, -np.array(mislabel_result['score']))
-
-        if args.exp == -1:
-            print("F1: ", F1)
-            print("F1 mean: ", np.mean(F1))
-            print("F1 std: ", np.std(F1))
-            print("MCC: ", MCC)
-            print("MCC mean: ", np.mean(MCC))
-            print("MCC std: ", np.std(MCC))
-            print("P: ", P)
-            print("P mean: ", np.mean(P))
-            print("P std: ", np.std(P))
+    print(ans)

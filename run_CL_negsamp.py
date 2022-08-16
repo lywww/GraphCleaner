@@ -4,6 +4,7 @@ from tqdm import tqdm
 import random
 import argparse
 import pandas as pd
+import pickle
 import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
@@ -26,7 +27,7 @@ from torch_geometric.data import Data
 from torch_geometric.loader import ClusterData, ClusterLoader, NeighborLoader, GraphSAINTRandomWalkSampler
 from torch_geometric.nn.models import MLP
 
-from GNN_models import GCN, myGIN, GAT, baseMLP
+from GNN_models import GCN, myGIN, myGAT, baseMLP, myGraphUNet
 from Utils import to_softmax, get_data, create_summary_writer, ensure_dir, setup_seed
 from cleanlab.latent_estimation import compute_confident_joint, estimate_latent
 from evaluate_different_methods import cal_patk, cal_afpr, get_ytest, cal_mcc
@@ -49,9 +50,11 @@ def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislab
     elif model_name == 'GIN':
         model = myGIN(in_channels=n_features, hidden_channels=256, out_channels=n_classes)
     elif model_name == 'GAT':
-        model = GAT(in_channels=n_features, hidden_channels=256, out_channels=n_classes)
+        model = myGAT(in_channels=n_features, hidden_channels=256, out_channels=n_classes)
     elif model_name == 'MLP':
         model = baseMLP([n_features, 256, n_classes])
+    elif model_name == 'GraphUNet':
+        model = myGraphUNet(in_channels=n_features, hidden_channels=16, out_channels=n_classes)
     model.to(device)
     print("Model: ", model)
 
@@ -80,7 +83,7 @@ def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislab
         model.load_state_dict(torch.load(trained_model_file))
     for epoch in range(n_epochs):
         model.train()
-        if dataset in ['Flickr', 'Cora', 'CiteSeer', 'PubMed', 'ogbn-arxiv']:  # small graph
+        if dataset in ['Flickr', 'Cora', 'CiteSeer', 'PubMed', 'ogbn-arxiv', 'Computers', 'Photo']:  # small graph
             data.to(device)
             optimizer.zero_grad()
             out = model(data)
@@ -170,7 +173,7 @@ def negative_sampling(data_orig, noise_matrix, sample_rate, n_classes):
     train_y = data.y[data.held_mask]
     valid_subidx = set([i for i in range(len(train_y))])
     for c in range(n_classes):
-        if np.isnan(noise_matrix[0][c]) or max(noise_matrix[:, c]) == 1:
+        if c >= len(noise_matrix[0]) or np.isnan(noise_matrix[0][c]) or max(noise_matrix[:, c]) == 1:
             print("Class {} is invalid!".format(c))
             valid = set(np.argwhere(train_y != c)[0].numpy())
             valid_subidx = valid_subidx & valid
@@ -179,9 +182,9 @@ def negative_sampling(data_orig, noise_matrix, sample_rate, n_classes):
     # sampling and change classes
     tr_sample_idx = random.sample(list(train_idx), int(np.round(sample_rate * len(train_idx))))
     for idx in tr_sample_idx:
-        y = data.y[idx]
-        while y == data.y[idx]:
-            y = np.random.choice([i for i in range(n_classes)], p=noise_matrix[:,y])
+        y = int(data.y[idx])
+        while y == int(data.y[idx]):
+            y = np.random.choice([i for i in range(len(noise_matrix[0]))], p=noise_matrix[:,y])
         data.y[idx] = y
     return data, tr_sample_idx
 
@@ -216,7 +219,6 @@ def generate_new_feature(k, data, noisy_data, sample_idx, all_sm_vectors, all_tw
     n = A.shape[0]
 
     # symmetric normalized adjacency matrix. 1e-10 is to prevent dividing by zero.
-    # print("degree matrix: ", spdiags(np.squeeze((1e-10 + np.array(A.sum(1)))**-0.5), 0, n, n))
     S = spdiags(np.squeeze((1e-10 + np.array(A.sum(1)))**-0.5), 0, n, n) @ A @ spdiags(np.squeeze((1e-10 + np.array(A.sum(0)))**-0.5), 0, n, n)
     S2 = S @ S
     S3 = S @ S2
@@ -240,14 +242,133 @@ def generate_new_feature(k, data, noisy_data, sample_idx, all_sm_vectors, all_tw
     P3 = S3 @ P0
     print("P calculated!")
 
+    if k == 1:
+        feat = np.hstack((
+            np.sum(L_corr * P0, axis=1, keepdims=True),
+            np.sum(L_corr * P1, axis=1, keepdims=True),
+            np.sum(L_corr * L1, axis=1, keepdims=True),
+        ))
+    elif k == 2:
+        feat = np.hstack((
+            np.sum(L_corr * P0, axis=1, keepdims=True),
+            np.sum(L_corr * P1, axis=1, keepdims=True),
+            np.sum(L_corr * P2, axis=1, keepdims=True),
+            np.sum(L_corr * L1, axis=1, keepdims=True),
+            np.sum(L_corr * L2, axis=1, keepdims=True),
+        ))
+    elif k == 3:
+        feat = np.hstack((
+            np.sum(L_corr * P0, axis=1, keepdims=True),  # since L_corr is one-hot, this just extracts the corresponding entry of P0
+            np.sum(L_corr * P1, axis=1, keepdims=True),
+            np.sum(L_corr * P2, axis=1, keepdims=True),
+            np.sum(L_corr * P3, axis=1, keepdims=True),
+            # np.sum(L_corr * L1, axis=1, keepdims=True),
+            # np.sum(L_corr * L2, axis=1, keepdims=True),
+            # np.sum(L_corr * L3, axis=1, keepdims=True),
+        ))
+    elif k == 4:
+        S4 = S @ S3
+        S4.setdiag(np.zeros((n,)))
+        L4 = S4 @ L0
+        P4 = S4 @ P0
+        feat = np.hstack((
+            np.sum(L_corr * P0, axis=1, keepdims=True),
+            np.sum(L_corr * P1, axis=1, keepdims=True),
+            np.sum(L_corr * P2, axis=1, keepdims=True),
+            np.sum(L_corr * P3, axis=1, keepdims=True),
+            np.sum(L_corr * P4, axis=1, keepdims=True),
+            np.sum(L_corr * L1, axis=1, keepdims=True),
+            np.sum(L_corr * L2, axis=1, keepdims=True),
+            np.sum(L_corr * L3, axis=1, keepdims=True),
+            np.sum(L_corr * L4, axis=1, keepdims=True),
+        ))
+    elif k == 5:
+        S4 = S @ S3
+        S4.setdiag(np.zeros((n,)))
+        L4 = S4 @ L0
+        P4 = S4 @ P0
+        S5 = S @ S3
+        S5.setdiag(np.zeros((n,)))
+        L5 = S5 @ L0
+        P5 = S5 @ P0
+
+        feat = np.hstack((
+            np.sum(L_corr * P0, axis=1, keepdims=True),
+            np.sum(L_corr * P1, axis=1, keepdims=True),
+            np.sum(L_corr * P2, axis=1, keepdims=True),
+            np.sum(L_corr * P3, axis=1, keepdims=True),
+            np.sum(L_corr * P4, axis=1, keepdims=True),
+            np.sum(L_corr * P5, axis=1, keepdims=True),
+            np.sum(L_corr * L1, axis=1, keepdims=True),
+            np.sum(L_corr * L2, axis=1, keepdims=True),
+            np.sum(L_corr * L3, axis=1, keepdims=True),
+            np.sum(L_corr * L4, axis=1, keepdims=True),
+            np.sum(L_corr * L5, axis=1, keepdims=True),
+        ))
+    return feat, y
+
+
+def generate_new_feature_for_case_study(k, data, noisy_data, sample_idx, all_sm_vectors, all_two_logits, n_classes):
+    print("Generating new features......")
+
+    y = np.zeros(data.num_nodes)  # 1 indicates negative / noisy
+    y[sample_idx] = 1
+
+    A = torch_geometric.utils.convert.to_scipy_sparse_matrix(data.edge_index)
+    n = A.shape[0]
+
+    # symmetric normalized adjacency matrix. 1e-10 is to prevent dividing by zero.
+    print("Start to calculate S")
+    S = spdiags(np.squeeze((1e-10 + np.array(A.sum(1)))**-0.5), 0, n, n) @ A @ spdiags(np.squeeze((1e-10 + np.array(A.sum(0)))**-0.5), 0, n, n)
+    # pickle.dump(S, open('output/product_S', 'wb'), protocol=4)
+    # S = pickle.load(open('output/product_S', 'rb'))
+    print("1")
+
+    S2 = S @ S
+    # pickle.dump(S2, open('output/product_S2', 'wb'), protocol=4)
+    # S2 = pickle.load(open('output/product_S2', 'rb'))
+    S2.setdiag(np.zeros((n,)))
+    print("2")
+
+    print("Start to calculate L")
+    ymat = y[:, np.newaxis]
+    tmpy = [int(i) for i in data.y]
+    L0 = np.eye(n_classes)[tmpy]  # original labels, converted to one-hot matrix
+    L0[~data.used_mask] = np.zeros(n_classes)
+    # tmpy2 = [[int(i)] for i in noisy_data.y]
+    # L_corr = (ymat * np.eye(n_classes)[tmpy2]) + (1 - ymat) * L0  # label matrix corrupted by negative samples
+    print("S shape: ", S.shape)
+    print("L0 shape: ", L0.shape)
+    L1 = S @ L0
+    # pickle.dump(L1, open('output/product_L1', 'wb'), protocol=4)
+    print('3')
+    L2 = S2 @ L0
+    # pickle.dump(L2, open('output/product_L2', 'wb'), protocol=4)
+    # L2 = S2 @ L0 - np.array(np.sum(S2, axis=1)) * L0
+    print('4')
+    # L3 = S @ (S2 @ L0) - np.array(np.sum(S * S2, axis=1)) * L0
+    print("L calculated!")
+
+    print("Start to calculate P")
+    P0 = all_sm_vectors[-1, :, :]  # base model softmax predictions matrix
+    P1 = S @ P0
+    print('5')
+    P2 = S2 @ P0
+    # P2 = S2 @ P0 - np.array(np.sum(S2, axis=1)) * P0
+    # print('6')
+    # P3 = S @ (S2 @ P0) - np.array(np.sum(S * S2, axis=1)) * P0
+    print("P calculated!")
+
+    tmpy2 = [int(i) for i in noisy_data.y]
+    L_corr = (ymat * np.eye(n_classes)[tmpy2]) + (1 - ymat) * L0
     feat = np.hstack((
         np.sum(L_corr * P0, axis=1, keepdims=True),  # since L_corr is one-hot, this just extracts the corresponding entry of P0
         np.sum(L_corr * P1, axis=1, keepdims=True),
         np.sum(L_corr * P2, axis=1, keepdims=True),
-        np.sum(L_corr * P3, axis=1, keepdims=True),
+        # np.sum(L_corr * P3, axis=1, keepdims=True),
         np.sum(L_corr * L1, axis=1, keepdims=True),
         np.sum(L_corr * L2, axis=1, keepdims=True),
-        np.sum(L_corr * L3, axis=1, keepdims=True),
+        # np.sum(L_corr * L3, axis=1, keepdims=True),
     ))
     return feat, y
 
@@ -324,6 +445,7 @@ if __name__ == "__main__":
     setup_seed(1119)
 
     parser = argparse.ArgumentParser(description="Our Approach")
+    parser.add_argument("--exp", type=int, default=0)
     parser.add_argument("--dataset", type=str, default='Cora')  # Reddit2 not usable currently
     parser.add_argument("--data_dir", type=str, default='./dataset')
     parser.add_argument("--mislabel_rate", type=float, default=0.1)
@@ -335,21 +457,22 @@ if __name__ == "__main__":
     parser.add_argument("--held_split", type=str, default='valid')
     parser.add_argument("--test_target", type=str, default='test')
     parser.add_argument("--n_epochs", type=int, default=200, help='Planetoid:200; ogbn-arxiv:500')
+    parser.add_argument("--bc_epochs", type=int, default=500, help='epochs of binary classifier')
     parser.add_argument("--lr", type=float, default=0.001, help='Planetoid:0.001; ogbn-arxiv:0.001')
     parser.add_argument('--weight_decay', type=float, default=0.0005)
-    parser.add_argument('--k', type=int, default=1)
+    parser.add_argument('--k', type=int, default=3)
     parser.add_argument('--validation', type=bool, default=True)
     args = parser.parse_args()
 
     ensure_dir('checkpoints')
-    trained_model_file = 'checkpoints/{}-{}-mislabel={}-{}-epochs={}-bs={}-lr={}-wd={}'.format\
+    trained_model_file = 'checkpoints/{}-{}-mislabel={}-{}-epochs={}-bs={}-lr={}-wd={}-exp={}'.format\
         (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.batch_size, args.lr,
-         args.weight_decay)
+         args.weight_decay, args.exp)
     ensure_dir('mislabel_results')
     mislabel_result_file = 'mislabel_results/validl1-laplacian-test={}-{}-{}-{}-mislabel={}-{}-sample={}-k={}-epochs={}-' \
-                           'lr={}-wd={}'.format(args.test_target, args.classifier, args.dataset, args.model,
+                           'lr={}-wd={}-nbonly-exp={}'.format(args.test_target, args.classifier, args.dataset, args.model,
                                                 args.mislabel_rate, args.noise_type, args.sample_rate, args.k,
-                                                args.n_epochs, args.lr, args.weight_decay)
+                                                args.n_epochs, args.lr, args.weight_decay, args.exp)
 
     # Step 1: train GNN and record the sm / log_sm vectors
     old_all_sm_vectors, all_two_logits, best_sm_vectors, data, n_classes = train_GNNs(args.model, args.dataset, args.n_epochs, args.lr,
@@ -362,9 +485,13 @@ if __name__ == "__main__":
     confident_joint = compute_confident_joint(data.y[data.val_mask], best_sm_vectors[data.val_mask])
     print("Confident Joint: ", confident_joint)
     py, noise_matrix, inv_noise_matrix = estimate_latent(confident_joint, data.y[data.val_mask])
+    # threshold = 0
+    # for i in range(n_classes):
+    #     threshold += noise_matrix[i][i] * sum(data.y==i) / len(data.y)
     print("Noise Matrix (p(s|y)): ")
     print(noise_matrix)
-    plt.figure()
+    # plt.figure()
+    plt.switch_backend('agg')
     sns.heatmap(noise_matrix.T, cmap='PuBu', vmin=0, vmax=1, linewidth=1, annot=n_classes < 10)
     plt.title('Learned Noise Transition Matrix')
     plt.savefig('val_Noise_Matrix_'+args.dataset+'_'+args.noise_type+'_'+str(args.mislabel_rate)+'_'+args.model+'.jpg',
@@ -416,9 +543,9 @@ if __name__ == "__main__":
         classifier.fit(X_train, y_train)
     else:
         ensure_dir('tensorboard_logs')
-        log_dir = 'tensorboard_logs/MLP-{}-{}-mislabel={}-{}-sample={}-k={}-epochs={}-lr={}-wd={}'.format \
+        log_dir = 'tensorboard_logs/MLP-{}-{}-mislabel={}-{}-sample={}-k={}-epochs={}-lr={}-wd={}-nbonly-exp={}'.format \
                     (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.sample_rate, args.k,
-                    500, 0.001, args.weight_decay)
+                    args.bc_epochs, 0.001, args.weight_decay, args.exp)
         writer = create_summary_writer(log_dir)
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print("Device: ", device)
@@ -426,7 +553,7 @@ if __name__ == "__main__":
         y_train = torch.from_numpy(y_train).long().to(device)
         classifier.to(device)
         optimizer = torch.optim.Adam(classifier.parameters(), lr=0.001, weight_decay=args.weight_decay)
-        for epoch in range(500):
+        for epoch in range(args.bc_epochs):
             classifier.train()
             optimizer.zero_grad()
             out = classifier(X_train)
@@ -440,6 +567,7 @@ if __name__ == "__main__":
 
     # Step 4: predict on the validation set
     print("Predicting......")
+    # print("Threshold is ", threshold)
     if args.classifier != "MLP":
         probs = classifier.predict_proba(X_test)[:, 1]
     else:
@@ -451,7 +579,7 @@ if __name__ == "__main__":
         probs = classifier(X_test).cpu().detach().numpy()[:, 1]
     print("Saving result......")
     idx2prob = dict(zip([i for i in range(len(probs))], probs))
-    result = probs > 0.5
+    result = probs > 0.97
     idx2score = dict()
     for i in range(len(result)):
         if result[i]:
@@ -465,10 +593,13 @@ if __name__ == "__main__":
     cal_mcc(result, ytest)
     cal_afpr(result, ytest)
     roc_auc = roc_auc_score(ytest, probs)
-    print("ROC AUC Score on Test set: {:.2f}".format(roc_auc))
+    print("ROC AUC Score on Test set: {:.4f}".format(roc_auc))
 
-    fpr, tpr, thresholds = roc_curve(ytest, probs)
-    plt.plot(fpr, tpr)
-    plt.xlabel("FPR")
-    plt.ylabel("TPR")
+    # fpr, tpr, thresholds = roc_curve(ytest, probs)
+    # plt.plot(fpr, tpr)
+    # plt.xlabel("FPR")
+    # plt.ylabel("TPR")
+    # plt.title('ROC of ' + args.dataset)
+    # plt.savefig('ROC' + '_' + args.dataset + '_' + args.noise_type + '_' + str(args.mislabel_rate) + '_' + args.model +
+    #             '_' + str(args.k) + '.jpg', bbox_inches='tight')
     # plt.show()

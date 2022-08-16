@@ -116,6 +116,7 @@ if __name__ == "__main__":
     setup_seed(1119)
 
     parser = argparse.ArgumentParser(description="AUM")
+    parser.add_argument("--exp", type=int, default=0)
     parser.add_argument("--dataset", type=str, default='Flickr')
     parser.add_argument("--data_dir", type=str, default='./dataset')
     parser.add_argument("--special_set", type=str, default='AUM1')
@@ -130,11 +131,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     ensure_dir('tensorboard_logs')
-    log_dir = 'tensorboard_logs/{}-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format\
-        (args.special_set, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
+    log_dir = 'tensorboard_logs/{}-{}-{}-mislabel={}-{}-epochs={}-lr={}-wd={}-exp={}'.format\
+        (args.special_set, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay, args.exp)
     ensure_dir('checkpoints')
-    trained_model_file = 'checkpoints/{}-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format\
-        (args.special_set, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
+    trained_model_file = 'checkpoints/{}-{}-{}-mislabel={}-{}-epochs={}-lr={}-wd={}-exp={}'.format\
+        (args.special_set, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay, args.exp)
 
     # generate threshold samples
     get_threshold_samples(args.dataset, args.test_target)
@@ -160,8 +161,8 @@ if __name__ == "__main__":
     #     # get noise indices
     #     aum(args.dataset, args.special_set, mislabel_result_file)
     from run_GNNs_validation import train_GNNs
-    mislabel_result_file = 'mislabel_results/AUM-test={}-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format\
-        (args.test_target, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
+    mislabel_result_file = 'mislabel_results/AUM-test={}-{}-{}-mislabel={}-{}-epochs={}-lr={}-wd={}-exp={}'.format\
+        (args.test_target, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay, args.exp)
     # get the prediction results and save to file
     predictions, noisy_y, test_idx = train_GNNs(args.model, args.dataset, args.noise_type, args.mislabel_rate,
                                                args.n_epochs, args.lr, args.weight_decay, log_dir,

@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau
 
 from aum import AUMCalculator
-from GNN_models import GCN, GraphSAGE, myGIN, GAT, baseMLP
+from GNN_models import GCN, GraphSAGE, myGIN, baseMLP, myGraphUNet, myGAT
 from Utils import get_data, to_softmax, create_summary_writer
 
 
@@ -38,18 +38,21 @@ def train_GNNs(model_name, dataset, noise_type, mislabel_rate, n_epochs, lr, wd,
     elif model_name == 'GIN':
         model = myGIN(in_channels=n_features, hidden_channels=256, out_channels=n_classes)
     elif model_name == 'GAT':
-        model = GAT(in_channels=n_features, hidden_channels=256, out_channels=n_classes)
+        model = myGAT(in_channels=n_features, hidden_channels=4, out_channels=n_classes)
     elif model_name == 'MLP':
         model = baseMLP([n_features, 256, n_classes])
+    elif model_name == 'GraphUNet':
+        model = myGraphUNet(in_channels=n_features, hidden_channels=16, out_channels=n_classes)
     model.to(device)
     print("Model: ", model)
 
     # prepare optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
-    scheduler = ReduceLROnPlateau(optimizer, mode='max')
+    # scheduler = ReduceLROnPlateau(optimizer, mode='max')
 
     # load / train the model
     if (not special_set) and os.path.exists(trained_model_file):
+        print("trained model file: ", trained_model_file)
         model.load_state_dict(torch.load(trained_model_file))
         model.eval()
         best_out = model(data)
@@ -81,21 +84,23 @@ def train_GNNs(model_name, dataset, noise_type, mislabel_rate, n_epochs, lr, wd,
             if special_set and special_set[:3] == 'AUM':
                 aum_input = to_softmax(out.cpu().detach().numpy())
                 aum_calculator.update(torch.from_numpy(aum_input).to(device), data.y, sample_ids)
-
-            model.eval()
-            eval_out = model(data)
-            y_pred = eval_out[data.val_mask].argmax(dim=-1).cpu().detach()
-            y_true = data.y[data.val_mask].cpu().detach()
-            cri = f1_score(y_true, y_pred, average='micro')
-            if cri > best_cri:
-                print("New Best Criterion: {:.2f}".format(cri))
-                best_cri = cri
-                best_out = eval_out
-                torch.save(model.state_dict(), trained_model_file)
+            else:
+                model.eval()
+                eval_out = model(data)
+                y_pred = eval_out[data.val_mask].argmax(dim=-1).cpu().detach()
+                y_true = data.y[data.val_mask].cpu().detach()
+                cri = f1_score(y_true, y_pred, average='micro')
+                if cri > best_cri:
+                    print("New Best Criterion: {:.2f}".format(cri))
+                    best_cri = cri
+                    best_out = eval_out
+                    torch.save(model.state_dict(), trained_model_file)
             # scheduler.step(cri)
         if special_set and special_set[:3] == 'AUM':
             aum_calculator.finalize()
 
+    if special_set and special_set[:3] == 'AUM':
+        return [], [], test_ids
     # evaluate on validation set
     model.eval()
     predictions = best_out  # model(data)
@@ -112,8 +117,6 @@ def train_GNNs(model_name, dataset, noise_type, mislabel_rate, n_epochs, lr, wd,
 
     predictions = to_softmax(predictions.cpu().detach().numpy())
     y = y.cpu().detach().numpy()
-    if special_set and special_set[:3] == 'AUM':
-        return predictions, y, test_ids
     if special_set and special_set[:5] == 'nbagg':
         return predictions, y, to_softmax(tr_predictions.cpu().detach().numpy()), tr_y.cpu().detach().numpy()
     return predictions, y
