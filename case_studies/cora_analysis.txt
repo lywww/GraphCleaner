@@ -1,0 +1,50 @@
+0 (test 164 ogb 851 pubid 1123991): pred = 6[Theo] (0.93740) actual = 3[Prob] (0.00939) - 3
+1 (test 513 ogb 2547 pubid 1125944): pred = 3[Prob] (0.94623) actual = 0[Case] (0.00951) - 3
+2 (test 539 ogb 2689 pubid 134060): pred = 4[Rein] (0.98171) actual = 6[Theo] (0.00961) - 4
+3 (test 270 ogb 1350 pubid 1102548): pred = 5[Rule] (0.92989) actual = 0[Case] (0.00984) - 2
+4 (test 474 ogb 2338 pubid 3222): pred = 3[Prob] (0.96824) actual = 0[Case] (0.00990) - 5
+5 (test 46 ogb 280 pubid 662416): pred = 2[Neur] (0.97948) actual = 3[Prob] (0.01034) - 3
+6 (test 251 ogb 1253 pubid 135130): pred = 1[Gene] (0.96587) actual = 4[Rein] (0.01055) - 3
+7 (test 323 ogb 1589 pubid 1071981): pred = 1[Gene] (0.96207) actual = 4[Rein] (0.01064) - 2
+8 (test 139 ogb 754 pubid 46536): pred = 0[Case] (0.42103) actual = 2[Neur] (0.01173) - 3
+9 (test 255 ogb 1297 pubid 49895): pred = 6[Theo] (0.40289) actual = 5[Rule] (0.01217) - 2
+10 (test 416 ogb 2042 pubid 1132815): pred = 5[Rule] (0.57914) actual = 2[Neur] (0.01241) - 3
+11 (test 533 ogb 2650 pubid 217852): pred = 0[Case] (0.43961) actual = 5[Rule] (0.01249) - 2
+12 (test 274 ogb 1381 pubid 1131607): pred = 2[Neur] (0.96726) actual = 3[Prob] (0.01328) - 2
+13 (test 124 ogb 694 pubid 1140547): pred = 3[Prob] (0.94042) actual = 2[Neur] (0.01439) - 3
+14 (test 518 ogb 2586 pubid 7047): pred = 2[Neur] (0.46034) actual = 4[Rein] (0.01960) - 5
+15 (test 76 ogb 429 pubid 84020): pred = 6[Theo] (0.59654) actual = 3[Prob] (0.02439) - 3
+16 (test 498 ogb 2464 pubid 1130243): pred = 2[Neur] (0.62547) actual = 3[Prob] (0.02731) - 2
+17 (test 319 ogb 1574 pubid 18815): pred = 3[Prob] (0.44962) actual = 0[Case] (0.02918) - 3
+18 (test 516 ogb 2577 pubid 1123068): pred = 6[Theo] (0.79073) actual = 3[Prob] (0.05356) - 1
+19 (test 22 ogb 153 pubid 782486): pred = 4[Rein] (0.93428) actual = 2[Neur] (0.06139) - 4
+20 (test 336 ogb 1671 pubid 1108551): pred = 5[Rule] (0.57047) actual = 6[Theo] (0.06263) - 1
+21 (test 519 ogb 2590 pubid 431206): pred = 2[Neur] (0.91751) actual = 3[Prob] (0.07035) - 2
+22 (test 317 ogb 1565 pubid 42848): pred = 2[Neur] (0.74654) actual = 1[Gene] (0.07911) - 2
+23 (test 266 ogb 1337 pubid 3236): pred = 3[Prob] (0.76342) actual = 6[Theo] (0.09244) - 5
+24 (test 494 ogb 2432 pubid 245288): pred = 2[Neur] (0.40713) actual = 4[Rein] (0.10224) - 2
+25 (test 202 ogb 1033 pubid 1130637): pred = 6[Theo] (0.44104) actual = 0[Case] (0.10265) - 3
+26 (test 180 ogb 929 pubid 105899): pred = 2[Neur] (0.38986) actual = 3[Prob] (0.13539) - 2
+27 (test 210 ogb 1104 pubid 1128437): pred = 5[Rule] (0.30775) actual = 6[Theo] (0.13975) - 5
+28 (test 21 ogb 151 pubid 51834): pred = 2[Neur] (0.31560) actual = 6[Theo] (0.14656) - 2
+29 (test 199 ogb 1020 pubid 167670): pred = 6[Theo] (0.49202) actual = 3[Prob] (0.14846) - 2
+30 (test 111 ogb 624 pubid 27510): pred = 1[Gene] (0.60620) actual = 6[Theo] (0.16718) - 
+31 (test 460 ogb 2257 pubid 1104647): pred = 4[Rein] (0.88151) actual = 1[Gene] (0.17873) - 
+32 (test 426 ogb 2091 pubid 75121): pred = 5[Rule] (0.62448) actual = 0[Case] (0.27487)
+33 (test 81 ogb 449 pubid 97892): pred = 5[Rule] (0.38448) actual = 0[Case] (0.32047)
+34 (test 282 ogb 1413 pubid 502574): pred = 5[Rule] (0.41930) actual = 0[Case] (0.43495)
+35 (test 213 ogb 1112 pubid 25772): pred = 3[Prob] (0.50632) actual = 2[Neur] (0.44000)
+36 (test 87 ogb 497 pubid 20942): pred = 0[Case] (0.32387) actual = 6[Theo] (0.44045)
+37 (test 263 ogb 1329 pubid 3223): pred = 5[Rule] (0.46183) actual = 6[Theo] (0.44988)
+38 (test 412 ogb 2023 pubid 1153106): pred = 6[Theo] (0.84691) actual = 2[Neur] (0.47635)
+39 (test 162 ogb 845 pubid 1127541): pred = 3[Prob] (0.97915) actual = 2[Neur] (0.48156)
+40 (test 326 ogb 1608 pubid 7032): pred = 2[Neur] (0.50040) actual = 3[Prob] (0.50543)
+41 (test 91 ogb 525 pubid 358894): pred = 3[Prob] (0.70498) actual = 6[Theo] (0.56291)
+42 (test 273 ogb 1369 pubid 1133047): pred = 6[Theo] (0.32723) actual = 1[Gene] (0.59268)
+43 (test 118 ogb 659 pubid 103482): pred = 1[Gene] (0.71184) actual = 2[Neur] (0.59679)
+44 (test 306 ogb 1532 pubid 66794): pred = 2[Neur] (0.74834) actual = 3[Prob] (0.61236)
+45 (test 357 ogb 1792 pubid 1125386): pred = 0[Case] (0.45872) actual = 6[Theo] (0.62639)
+46 (test 422 ogb 2080 pubid 101662): pred = 5[Rule] (0.82198) actual = 6[Theo] (0.67933)
+47 (test 522 ogb 2597 pubid 6344): pred = 2[Neur] (0.49144) actual = 0[Case] (0.68217)
+48 (test 291 ogb 1445 pubid 136768): pred = 5[Rule] (0.48210) actual = 5[Rule] (0.69091)
+49 (test 432 ogb 2135 pubid 46887): pred = 6[Theo] (0.78180) actual = 2[Neur] (0.69816)
