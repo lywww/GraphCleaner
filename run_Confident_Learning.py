@@ -2,26 +2,27 @@ import argparse
 import numpy as np
 import pandas as pd
 
-import cleanlab
-from cleanlab import baseline_methods
 from cleanlab.latent_estimation import compute_confident_joint
 from cleanlab.pruning import order_label_errors
-from Utils import setup_seed, ensure_dir
+from Utils import setup, ensure_dir
+from run_GNNs_validation import train_GNNs
 
 
 def confident_learning(psx, s, mislabel_result_file):
     # Borrowed from https://github.com/cleanlab/cleanlab/tree/master/examples/cifar10
+    # @article{northcutt2021confident,
+    #   title={Confident learning: Estimating uncertainty in dataset labels},
+    #   author={Northcutt, Curtis and Jiang, Lu and Chuang, Isaac},
+    #   journal={Journal of Artificial Intelligence Research},
+    #   volume={70},
+    #   pages={1373--1411},
+    #   year={2021}
+    # }
     # cleanlab code for computing the 5 confident learning methods.
     # psx is the n x m matrix of cross-validated predicted probabilities
     # s is the array of noisy labels
 
     result_file = mislabel_result_file + '.csv'
-    # if os.path.exists(result_file):
-    #     result = pd.read_csv(result_file)
-    #     print("Confident Learning results already existed!")
-    #     # return result['baseline_conf_joint_only'], result['baseline_argmax'], result['baseline_cl_pbc'], \
-    #     #        result['baseline_cl_pbnr'], result['baseline_cl_both']
-    #     return result['result'], result['ordered_errors']
 
     # Method: C_{\tilde{y}, y^*} (default)
     label_error_mask = np.zeros(len(s), dtype=bool)
@@ -57,11 +58,11 @@ def confident_learning(psx, s, mislabel_result_file):
 
 
 if __name__ == "__main__":
-    setup_seed(1119)
+    setup()
 
     parser = argparse.ArgumentParser(description="Confident Learning")
     parser.add_argument("--exp", type=int, default=0)
-    parser.add_argument("--dataset", type=str, default='Flickr')
+    parser.add_argument("--dataset", type=str, default='Cora')
     parser.add_argument("--data_dir", type=str, default='./dataset')
     parser.add_argument("--mislabel_rate", type=float, default=0.1)
     parser.add_argument("--noise_type", type=str, default='symmetric')
@@ -83,7 +84,6 @@ if __name__ == "__main__":
     gnn_result_file = 'gnn_results/{}-{}-mislabel={}-{}-epochs={}-lr={}-wd={}-exp={}'.format\
         (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay, args.exp)
     ensure_dir('mislabel_results')
-    from run_GNNs_validation import train_GNNs
     mislabel_result_file = 'mislabel_results/CL-test={}-{}-{}-mislabel={}-{}-epochs={}-lr={}-wd={}-exp={}'.format \
         (args.test_target, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay, args.exp)
 

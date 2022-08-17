@@ -2,15 +2,12 @@ import argparse
 import numpy as np
 import pandas as pd
 
-from Utils import setup_seed, ensure_dir
+from Utils import setup, ensure_dir
+from run_GNNs_validation import train_GNNs
 
 
 def baseline(predictions, noisy_y, mislabel_result_file):
     result_file = mislabel_result_file + '.csv'
-    # if os.path.exists(result_file):
-    #     result = pd.read_csv(result_file)
-    #     print("Baseline results already existed!")
-    #     return result['result'], result['ordered_errors']
 
     result = []
     idx2score = dict()
@@ -30,11 +27,11 @@ def baseline(predictions, noisy_y, mislabel_result_file):
 
 
 if __name__ == "__main__":
-    setup_seed(1119)
+    setup()
 
     parser = argparse.ArgumentParser(description="Baseline")
     parser.add_argument("--exp", type=int, default=0)
-    parser.add_argument("--dataset", type=str, default='Flickr')
+    parser.add_argument("--dataset", type=str, default='Cora')
     parser.add_argument("--data_dir", type=str, default='./dataset')
     parser.add_argument("--mislabel_rate", type=float, default=0.1)
     parser.add_argument("--noise_type", type=str, default='symmetric')
@@ -56,15 +53,13 @@ if __name__ == "__main__":
     gnn_result_file = 'gnn_results/{}-{}-mislabel={}-{}-epochs={}-lr={}-wd={}-exp={}'.format\
         (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay, args.exp)
     ensure_dir('mislabel_results')
-
-    from run_GNNs_validation import train_GNNs
     mislabel_result_file = 'mislabel_results/baseline-test={}-{}-{}-mislabel={}-{}-epochs={}-lr={}-wd={}-exp={}'.format \
         (args.test_target, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay, args.exp)
 
     # get the prediction results and save to file
     predictions, noisy_y = train_GNNs(args.model, args.dataset, args.noise_type, args.mislabel_rate, args.n_epochs,
                                       args.lr, args.weight_decay, log_dir, trained_model_file, args.test_target)
-    result = pd.DataFrame(data=np.hstack((predictions, noisy_y.reshape((-1,1)))))
+    result = pd.DataFrame(data=np.hstack((predictions, noisy_y.reshape((-1, 1)))))
     result.to_csv(gnn_result_file+'.csv', index=False, header=None)
     print("{} results saved!".format(args.model))
 

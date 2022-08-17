@@ -3,15 +3,13 @@ import copy
 import numpy as np
 import pandas as pd
 
-from Utils import get_data, setup_seed, ensure_dir
+from Utils import get_data, setup, ensure_dir
+from run_GNNs_validation import train_GNNs
 
 
 def get_threshold_samples(dataset, test_target):
     ensure_dir('aum_data')
     file_name = './aum_data/' + dataset + '_aum_threshold_samples.csv'
-    # if os.path.exists(file_name):
-    #     print("Threshold samples info already generated!")
-    #     return
 
     data, n_classes = get_data(dataset)
     if test_target == 'valid':
@@ -25,57 +23,6 @@ def get_threshold_samples(dataset, test_target):
                                         'second_threshold_samples': second_threshold_samples})
     threshold_samples.to_csv(file_name, index=False)
     print("Threshold samples info saved!")
-
-
-def aum(dataset, special_set, mislabel_result_file):
-    # Calculate the 99-percentile threshold
-    threshold_samples_file = './aum_data/' + dataset + '_aum_threshold_samples.csv'
-    threshold_samples = pd.read_csv(threshold_samples_file)
-    aum_values = pd.read_csv('./aum_data/aum_values.csv')
-    idx2aum = dict(zip(aum_values['sample_id'], aum_values['aum']))
-    threshold_aums = []
-    if special_set[-1] == '1':
-        threshold_samples = threshold_samples['first_threshold_samples'].values
-        for idx in threshold_samples:
-            threshold_aums.append(idx2aum[idx])
-    else:
-        threshold_samples = threshold_samples['second_threshold_samples'].values
-        for idx in threshold_samples:
-            threshold_aums.append(idx2aum[idx])
-    threshold_aums.sort()
-    threshold = threshold_aums[int(len(threshold_aums)*0.99)]
-    print('threshold is {}'.format(threshold))
-
-    # Filter out the mislabelled samples
-    idx2result = copy.deepcopy(idx2aum)
-    for k,v in idx2aum.items():
-        if k in threshold_samples:
-            continue
-        if v <= threshold:
-            idx2result[k] = True
-        else:
-            idx2result[k] = False
-    result = [pair[1] for pair in sorted(idx2result.items(), key=lambda x: x[0])]
-    aum = [idx2aum[i] for i in sorted(idx2aum)]
-
-    # Save the results (True means wrong label)
-    result_file = mislabel_result_file + '.csv'
-    if special_set[-1] == '2':
-        previous_result = pd.read_csv(result_file)
-        for i in range(len(result)):
-            if result[i] is not True and result[i] is not False:
-                result[i] = previous_result['result'][i]
-                aum[i] = previous_result['aum'][i]
-
-    idx2score = dict()
-    for i in range(len(result)):
-        if result[i]:
-            idx2score[i] = aum[i]
-    er = [x[0] for x in sorted(idx2score.items(), key=lambda x: x[1])]
-    cl_results = pd.DataFrame({'result': pd.Series(result), 'aum': pd.Series(aum), 'ordered_errors': pd.Series(er)})
-    cl_results.to_csv(result_file, index=False)
-    print("{} results saved!".format(special_set))
-    return result, er
 
 
 def validation_aum(dataset, special_set, test_idx, mislabel_result_file):
@@ -113,13 +60,13 @@ def validation_aum(dataset, special_set, test_idx, mislabel_result_file):
 
 
 if __name__ == "__main__":
-    setup_seed(1119)
+    setup()
 
     parser = argparse.ArgumentParser(description="AUM")
     parser.add_argument("--exp", type=int, default=0)
-    parser.add_argument("--dataset", type=str, default='Flickr')
+    parser.add_argument("--dataset", type=str, default='Cora')
     parser.add_argument("--data_dir", type=str, default='./dataset')
-    parser.add_argument("--special_set", type=str, default='AUM1')
+    parser.add_argument("--special_set", type=str, default='AUM')
     parser.add_argument("--mislabel_rate", type=float, default=0.1)
     parser.add_argument("--noise_type", type=str, default='symmetric')
     parser.add_argument("--model", type=str, default='GCN')
@@ -141,26 +88,6 @@ if __name__ == "__main__":
     get_threshold_samples(args.dataset, args.test_target)
 
     ensure_dir('mislabel_results')
-    # if args.validation:
-    #     from run_GNNs_validation import train_GNNs
-    #     mislabel_result_file = 'mislabel_results/validation-AUM-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
-    #         (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
-    #     # get the prediction results and save to file
-    #     predictions, noisy_y, val_idx = train_GNNs(args.model, args.dataset, args.noise_type, args.mislabel_rate,
-    #                                                args.n_epochs, args.lr, args.weight_decay, log_dir,
-    #                                                trained_model_file, args.special_set)
-    #     # get noise indices
-    #     validation_aum(args.dataset, args.special_set, val_idx, mislabel_result_file)
-    # else:
-    #     from run_GNNs import train_GNNs
-    #     mislabel_result_file = 'mislabel_results/AUM-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
-    #         (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
-    #     # get the prediction results and save to file
-    #     predictions, noisy_y = train_GNNs(args.model, args.dataset, args.noise_type, args.mislabel_rate, args.n_epochs,
-    #                                       args.lr, args.weight_decay, log_dir, trained_model_file, args.special_set)
-    #     # get noise indices
-    #     aum(args.dataset, args.special_set, mislabel_result_file)
-    from run_GNNs_validation import train_GNNs
     mislabel_result_file = 'mislabel_results/AUM-test={}-{}-{}-mislabel={}-{}-epochs={}-lr={}-wd={}-exp={}'.format\
         (args.test_target, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay, args.exp)
     # get the prediction results and save to file

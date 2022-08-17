@@ -3,7 +3,6 @@ import argparse
 import random
 import json
 import numpy as np
-import copy
 import seaborn as sns
 import matplotlib.pyplot as plt
 
@@ -11,14 +10,13 @@ from torch_geometric.datasets import Planetoid, Amazon
 from ogb.nodeproppred import PygNodePropPredDataset
 
 
-dataset2classes = {'Flickr': 7, 'Reddit2': 41, 'Cora': 7, 'CiteSeer': 6, 'PubMed': 3, 'Computers': 10, 'Photo': 8}
+dataset2classes = {'Cora': 7, 'CiteSeer': 6, 'PubMed': 3, 'Computers': 10, 'Photo': 8}
 
 
 def generate_noise(args):
     print("Loading {}...".format(args.dataset))
-    if args.dataset in ['ogbn-arxiv', 'ogbn-papers100M']:
+    if args.dataset in ['ogbn-arxiv']:
         # ogbn-arxiv: Data(edge_index=[2, 1166243], x=[169343, 128], node_year=[169343, 1], y=[169343, 1])
-        # ogbn-papers100M: Data(edge_index=[2, 1615685872], x=[111059956, 128], node_year=[111059956, 1], y=[111059956, 1])
         dataset = PygNodePropPredDataset(name=args.dataset, root=args.data_dir)
         dataset_name = args.dataset[:4] + '_' + args.dataset[5:]
         data = dataset[0]
@@ -67,7 +65,7 @@ def generate_noise(args):
                 noisy_class_map[sample] = noisy_label
 
         print("Saving the noisy label...")
-        with open(os.path.join('/data/yuwen/', dataset_name, 'raw/noisy_class_map_' + args.noise_type + '_' +
+        with open(os.path.join('./dataset', dataset_name, 'raw/noisy_class_map_' + args.noise_type + '_' +
                                                           str(args.mislabel_rate) + '.json'), 'w') as f:
             json.dump(noisy_class_map, f)
 
@@ -86,74 +84,11 @@ def generate_noise(args):
         plt.title('Groundtruth Noise Transition Matrix')
         matrix_name = 'GT_Noise_Matrix_' + dataset_name + '_' + args.noise_type + '_' + str(args.mislabel_rate)
         plt.savefig(matrix_name + '.jpg', bbox_inches='tight')
-        # plt.show()
+        plt.show()
         np.save(matrix_name + '.npy', real_transit.T)
 
-    elif args.dataset in ['Flickr', 'Reddit2']:
-        n_classes = dataset2classes[args.dataset]
-        dir = os.path.join('./dataset', args.dataset, 'raw')
-        with open(os.path.join(dir, 'class_map.json'), 'r') as f:
-            class_map = json.load(f)
-        with open(os.path.join(dir, 'role.json'), 'r') as f:
-            role = json.load(f)
-        print("Loaded! There are {} training data, {} validation data, {} test data.".format
-              (len(role['tr']), len(role['va']), len(role['te'])))
-
-        print("Choosing samples with mislabelling rate {}...".format(args.mislabel_rate))
-        tr_label_data = dict(zip(range(n_classes), [[] for _ in range(n_classes)]))
-        va_label_data = dict(zip(range(n_classes), [[] for _ in range(n_classes)]))
-        te_label_data = dict(zip(range(n_classes), [[] for _ in range(n_classes)]))
-        for data in role['tr']:
-            tr_label_data[class_map[str(data)]].append(data)
-        for data in role['va']:
-            va_label_data[class_map[str(data)]].append(data)
-        for data in role['te']:
-            te_label_data[class_map[str(data)]].append(data)
-        samples = []
-        for k, v in tr_label_data.items():
-            samples += list(np.random.choice(v, size=int(len(v)*args.mislabel_rate), replace=False))
-        for k, v in va_label_data.items():
-            samples += list(np.random.choice(v, size=int(len(v)*args.mislabel_rate), replace=False))
-        for k, v in te_label_data.items():
-            samples += list(np.random.choice(v, size=int(len(v)*args.mislabel_rate), replace=False))
-
-        noisy_class_map = copy.deepcopy(class_map)
-        if args.noise_type == 'symmetric':
-            print("Changing the label of samples symmetrically...")
-            for sample in samples:
-                ori_label = class_map[str(sample)]
-                labels = [i for i in range(n_classes)]
-                labels.remove(ori_label)
-                noisy_label = np.random.choice(a=labels, size=1, replace=False)
-                noisy_class_map[str(sample)] = int(noisy_label[0])
-        else:
-            print("Changing the label of samples asymmetrically...")
-            for sample in samples:
-                ori_label = class_map[str(sample)]
-                if ori_label == n_classes-1:
-                    noisy_label = 0
-                else:
-                    noisy_label = ori_label + 1
-                noisy_class_map[str(sample)] = noisy_label
-
-        print("Saving the noisy label...")
-        with open(os.path.join(dir, 'noisy_class_map_'+args.noise_type+'_'+str(args.mislabel_rate)+'.json'), 'w') as f:
-            json.dump(noisy_class_map, f)
-
-        print("Drawing the noise transition matrix...")
-        real_transit = np.zeros((n_classes, n_classes))
-        for k in role['tr']:
-            real_transit[class_map[str(k)]][noisy_class_map[str(k)]] += 1
-        real_transit = real_transit / np.sum(real_transit, axis=1).reshape(-1, 1)
-        plt.figure()
-        sns.heatmap(real_transit, cmap='PuBu', vmin=0, vmax=1, linewidth=1, annot=False)
-        plt.title('Groundtruth Noise Transition Matrix')
-        plt.savefig('GT_Noise_Matrix_' + args.dataset + '_' + args.noise_type + '_' + str(args.mislabel_rate) + '.jpg',
-                    bbox_inches='tight')
-        plt.show()
-
     elif args.dataset in ['Cora', 'CiteSeer', 'PubMed']:
-        dataset = Planetoid(root='./dataset', name=args.dataset)
+        dataset = Planetoid(root=args.data_dir, name=args.dataset)
         data = dataset[0]
         n_classes = dataset2classes[args.dataset]
         train_mask = np.ones(len(data.train_mask), dtype=bool)
@@ -180,7 +115,6 @@ def generate_noise(args):
             samples += list(np.random.choice(v, size=int(len(v) * args.mislabel_rate), replace=False))
         for k, v in te_label_data.items():
             samples += list(np.random.choice(v, size=int(len(v) * args.mislabel_rate), replace=False))
-        print("num of samples: ", len(samples), len(set(samples)))
 
         noisy_class_map = dict(zip(range(len(data.y)), [y.item() for y in data.y]))
         if args.noise_type == 'symmetric':
@@ -221,7 +155,10 @@ def generate_noise(args):
         np.save(matrix_name + '.npy', real_transit.T)
 
     elif args.dataset in ['Computers', 'Photo']:
-        dataset = Amazon(root='./dataset/Amazon', name=args.dataset)
+        data_dir = args.data_dir + '/Amazon/'
+        if not os.path.exists(data_dir):
+            os.mkdir(data_dir)
+        dataset = Amazon(root=data_dir, name=args.dataset)
         data = dataset[0]
         n_classes = dataset2classes[args.dataset]
         length = len(data.y)
@@ -252,7 +189,6 @@ def generate_noise(args):
             samples += list(np.random.choice(v, size=int(len(v) * args.mislabel_rate), replace=False))
         for k, v in te_label_data.items():
             samples += list(np.random.choice(v, size=int(len(v) * args.mislabel_rate), replace=False))
-        print("num of samples: ", len(samples), len(set(samples)))
 
         noisy_class_map = dict(zip(range(len(data.y)), [y.item() for y in data.y]))
         if args.noise_type == 'symmetric':
@@ -298,7 +234,7 @@ if __name__ == "__main__":
     np.random.seed(1119)
 
     parser = argparse.ArgumentParser(description="Generate Noises")
-    parser.add_argument("--dataset", type=str, default='Flickr')
+    parser.add_argument("--dataset", type=str, default='Cora')
     parser.add_argument("--data_dir", type=str, default='./dataset')
     parser.add_argument("--mislabel_rate", type=float, default=0.1)
     parser.add_argument("--noise_type", type=str, default='symmetric')

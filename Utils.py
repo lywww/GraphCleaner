@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 
 import torch
-from torch_geometric.datasets import Flickr, Planetoid, Reddit2, Amazon
+from torch_geometric.datasets import Planetoid, Amazon
 from ogb.nodeproppred import PygNodePropPredDataset
 
 try:
@@ -14,7 +14,8 @@ except ImportError:
     raise RuntimeError("No tensorboardX package is found. Please install with the command: \npip install tensorboardX")
 
 
-def setup_seed(seed):
+def setup():
+    # seed = 1119
     # np.random.seed(seed)
     # random.seed(seed)
     # torch.manual_seed(seed)
@@ -30,22 +31,10 @@ def ensure_dir(path):
 
 def get_data(dataset, noise_type='symmetric', mislabel_rate=0, special_set=None):
     dir = os.path.join('./dataset', dataset)
-    if dataset in ['Flickr', 'Reddit2']:  # tr, va, te are all corrupted
-        if dataset == 'Flickr':
-            data = Flickr(dir)
-        elif dataset == 'Reddit2':
-            data = Reddit2(dir)
-        n_classes = data.num_classes
-        data = data[0]
-
-    elif dataset in ['Cora', 'CiteSeer', 'PubMed']:
+    if dataset in ['Cora', 'CiteSeer', 'PubMed']:
         data = Planetoid(root='./dataset', name=dataset)
-        # train_mask = np.ones(len(data[0].train_mask), dtype=bool)
-        # train_mask[data[0].val_mask] = False
-        # train_mask[data[0].test_mask] = False
         n_classes = data.num_classes
         data = data[0]
-        # data.train_mask = torch.from_numpy(train_mask)
         print("number of training samples in get_data: ", sum(data.train_mask))
 
     elif dataset in ['Computers', 'Photo']:
@@ -65,10 +54,9 @@ def get_data(dataset, noise_type='symmetric', mislabel_rate=0, special_set=None)
         data.test_mask = torch.from_numpy(test_mask).bool()
         print("number of training samples in get_data: ", sum(data.train_mask))
 
-    elif dataset in ['ogbn-arxiv', 'ogbn-papers100M']:
-        dir = os.path.join('/data/yuwen/', dataset)
+    elif dataset in ['ogbn-arxiv']:
         dir = dir.replace('-', '_')
-        data = PygNodePropPredDataset(name=dataset, root='/data/yuwen/')
+        data = PygNodePropPredDataset(name=dataset, root='./dataset')
         split_idx = data.get_idx_split()
         n_classes = data.num_classes
         data = data[0]
@@ -91,7 +79,7 @@ def get_data(dataset, noise_type='symmetric', mislabel_rate=0, special_set=None)
             data.y[i] = noisy_class_map[str(i)]
         except:
             data.y[i] = noisy_class_map[i]
-    if special_set and special_set[:3] == 'AUM':
+    if special_set and 'AUM' in special_set:
         threshold_samples = pd.read_csv('./aum_data/' + dataset + '_aum_threshold_samples.csv')
         if special_set[-1] == '1':
             threshold_idx = threshold_samples['first_threshold_samples']

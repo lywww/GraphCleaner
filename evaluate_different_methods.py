@@ -12,28 +12,7 @@ from ogb.nodeproppred import PygNodePropPredDataset
 
 def get_ytest(dataset, noise_type, mislabel_rate, target_set):
     # get y_test ( 1 indicates noisy / wrong label)
-    if dataset == 'Flickr':
-        class_map = './dataset/Flickr/raw/class_map.json'
-        noisy_class_map = './dataset/Flickr/raw/' + 'noisy_class_map_' + noise_type + '_' + \
-                          str(mislabel_rate) + '.json'
-        role = './dataset/Flickr/raw/role.json'
-        with open(class_map, 'r') as f:
-            class_map = json.load(f)
-        with open(noisy_class_map, 'r') as f:
-            noisy_class_map = json.load(f)
-        with open(role, 'r') as f:
-            role = json.load(f)
-        tr_mask = np.zeros(len(class_map), dtype=bool)
-        if target_set == 'valid':
-            tr_mask[role['va']] = True
-        elif target_set == 'train':
-            tr_mask[role['tr']] = True
-        else:
-            tr_mask[role['te']] = True
-        origin_class = np.array(list(class_map.values()))[tr_mask]
-        noisy_class = np.array(list(noisy_class_map.values()))[tr_mask]
-        y_test = origin_class != noisy_class
-    elif dataset in ['Cora', 'CiteSeer', 'PubMed']:
+    if dataset in ['Cora', 'CiteSeer', 'PubMed']:
         data = Planetoid(root='./dataset', name=dataset)
         data = data[0]
         noisy_class_map = './dataset/' + dataset + '/raw/' + 'noisy_class_map_' + noise_type + '_' + \
@@ -76,7 +55,7 @@ def get_ytest(dataset, noise_type, mislabel_rate, target_set):
         noisy_class = np.array(list(noisy_class_map.values()))[mask]
         y_test = origin_class != noisy_class
     elif dataset in ['ogbn-arxiv']:
-        noisy_class_map = '/data/yuwen/' + dataset.replace('-', '_') + '/raw/' + 'noisy_class_map_' + noise_type + '_' + \
+        noisy_class_map = './dataset/' + dataset.replace('-', '_') + '/raw/' + 'noisy_class_map_' + noise_type + '_' + \
                           str(mislabel_rate) + '.json'
         dataset = PygNodePropPredDataset(name=dataset, root='./dataset')
         split_idx = dataset.get_idx_split()
@@ -136,7 +115,7 @@ def cal_auc(y_test, score):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluating Different Methods")
     parser.add_argument("--exp", type=int, default=0, help="-1 means evaluate 0-9 runs")
-    parser.add_argument("--dataset", type=str, default='Flickr')
+    parser.add_argument("--dataset", type=str, default='Cora')
     parser.add_argument("--data_dir", type=str, default='./dataset')
     parser.add_argument("--mislabel_rate", type=float, default=0.1)
     parser.add_argument("--sample_rate", type=float, default=0.5)
@@ -144,7 +123,7 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default='GCN')
     parser.add_argument("--classifier", type=str, default='MLP')
     parser.add_argument("--method", type=str, default='CL',
-                        help='If want to evaluate more than 1 method, link method names with \'+\'.')
+                        help='If want to evaluate more than 1 method, concatenate method names with \'+\'.')
     parser.add_argument("--n_epochs", type=int, default=200)
     parser.add_argument("--k", type=int, default=3)
     parser.add_argument("--lr", type=float, default=0.001)
@@ -160,30 +139,6 @@ if __name__ == "__main__":
         if m == '':
             break
 
-        # if m == 'CL':
-        #     mislabel_result_file = 'mislabel_results/{}-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
-        #         (m, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
-        #     mislabel_result_file += '.csv'
-        #     mislabel_result = pd.read_csv(mislabel_result_file)
-        #     print("Evaluate baseline_conf_joint_only...")
-        #     cal_afpr(np.array(mislabel_result['baseline_conf_joint_only']), y_test)
-        #     print("Evaluate baseline_argmax...")
-        #     cal_afpr(np.array(mislabel_result['baseline_argmax']), y_test)
-        #     print("Evaluate baseline_cl_pbc...")
-        #     cal_afpr(np.array(mislabel_result['baseline_cl_pbc']), y_test)
-        #     print("Evaluate baseline_cl_pbnr...")
-        #     cal_afpr(np.array(mislabel_result['baseline_cl_pbnr']), y_test)
-        #     print("Evaluate baseline_cl_both...")
-        #     cal_afpr(np.array(mislabel_result['baseline_cl_both']), y_test)
-        # elif m == 'baseline' or m == 'AUM':
-        # if args.validation:
-        #     mislabel_result_file = 'mislabel_results/validation-{}-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
-        #     (m, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr,
-        #      args.weight_decay)
-        # else:
-        #     mislabel_result_file = 'mislabel_results/{}-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
-        #         (m, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr,
-        #          args.weight_decay)
         F1, MCC, P = [], [], []
         if args.exp == -1:
             runs = [i for i in range(10)]
@@ -194,12 +149,10 @@ if __name__ == "__main__":
                 (m, args.test_target, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr,
                  args.weight_decay, run)
             if m == 'ours':
-                mislabel_result_file = 'mislabel_results/validl1-noCL-laplacian-test=test-MLP-{}-GCN-mislabel={}-{}-sample=0.5-k={}-epochs=200-' \
-                                       'lr=0.001-wd=0.0005-exp={}'.format(args.dataset, args.mislabel_rate, args.noise_type, args.k, run)
-                # mislabel_result_file = 'mislabel_results/validl1-laplacian-test={}-{}-{}-{}-mislabel={}-{}-sample={}-k={}-epochs={}-' \
-                #            'lr={}-wd={}-exp={}'.format(args.test_target, args.classifier, args.dataset, args.model,
-                #                                 args.mislabel_rate, args.noise_type, args.sample_rate, args.k,
-                #                                 args.n_epochs, args.lr, args.weight_decay, run)
+                mislabel_result_file = 'mislabel_results/validl1-laplacian-test={}-{}-{}-{}-mislabel={}-{}-sample={}-k={}-epochs={}-' \
+                           'lr={}-wd={}-exp={}'.format(args.test_target, args.classifier, args.dataset, args.model,
+                                                args.mislabel_rate, args.noise_type, args.sample_rate, args.k,
+                                                args.n_epochs, args.lr, args.weight_decay, run)
             mislabel_result_file += '.csv'
             mislabel_result = pd.read_csv(mislabel_result_file)
             print("Evaluate ", m)

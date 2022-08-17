@@ -1,24 +1,13 @@
 import os
 import numpy as np
-from reliability_diagrams import reliability_diagram
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, matthews_corrcoef
+from sklearn.metrics import f1_score
 
 import torch
 import torch.nn.functional as F
-from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau
 
 from aum import AUMCalculator
-from GNN_models import GCN, GraphSAGE, myGIN, baseMLP, myGraphUNet, myGAT
+from GNN_models import GCN, myGIN, baseMLP, myGraphUNet, myGAT
 from Utils import get_data, to_softmax, create_summary_writer
-
-
-def draw_reliability_diagram(predictions, y, model_name, noise_type, mislabel_rate):
-    predictions = to_softmax(predictions.cpu().detach().numpy())
-    y = y.cpu().detach().numpy()
-    fig = reliability_diagram(true_labels=y, pred_labels=np.argmax(predictions, axis=1),
-                              confidences=np.max(predictions, axis=1), return_fig=True)
-    fig.savefig('./' + model_name + '_' + noise_type + '_' + str(mislabel_rate) + '_reliability.jpg',
-                bbox_inches='tight')
 
 
 def train_GNNs(model_name, dataset, noise_type, mislabel_rate, n_epochs, lr, wd, log_dir, trained_model_file,
@@ -48,16 +37,16 @@ def train_GNNs(model_name, dataset, noise_type, mislabel_rate, n_epochs, lr, wd,
 
     # prepare optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
-    # scheduler = ReduceLROnPlateau(optimizer, mode='max')
 
     # load / train the model
+    isAUM = special_set and 'AUM' in special_set
     if (not special_set) and os.path.exists(trained_model_file):
         print("trained model file: ", trained_model_file)
         model.load_state_dict(torch.load(trained_model_file))
         model.eval()
         best_out = model(data)
     else:
-        if special_set and special_set[:3] == 'AUM':
+        if isAUM:
             aum_calculator = AUMCalculator('./aum_data', compressed=True)
             sample_ids = np.arange(len(data.y))
             if test_target == 'valid':
@@ -70,18 +59,15 @@ def train_GNNs(model_name, dataset, noise_type, mislabel_rate, n_epochs, lr, wd,
             model.train()
             optimizer.zero_grad()
             out = model(data)
-            if special_set and special_set[:3] == 'AUM' and test_target == 'test':
+            if isAUM and test_target == 'test':
                 loss = F.nll_loss(out[~data.test_mask], data.y[~data.test_mask])
             else:
                 loss = F.nll_loss(out[data.train_mask], data.y[data.train_mask])
-            # if special_set and special_set[:3] == 'AUM':
-            #     aum_input = model.get_logits(data).cpu().detach().numpy()
-            #     aum_calculator.update(torch.from_numpy(aum_input).to(device), data.y, sample_ids)
             print("Epoch[{}] Loss: {:.2f}".format(epoch + 1, loss))
             writer.add_scalar("training/loss", loss, epoch)
             loss.backward()
             optimizer.step()
-            if special_set and special_set[:3] == 'AUM':
+            if isAUM:
                 aum_input = to_softmax(out.cpu().detach().numpy())
                 aum_calculator.update(torch.from_numpy(aum_input).to(device), data.y, sample_ids)
             else:
@@ -95,19 +81,16 @@ def train_GNNs(model_name, dataset, noise_type, mislabel_rate, n_epochs, lr, wd,
                     best_cri = cri
                     best_out = eval_out
                     torch.save(model.state_dict(), trained_model_file)
-            # scheduler.step(cri)
-        if special_set and special_set[:3] == 'AUM':
+        if isAUM:
             aum_calculator.finalize()
 
-    if special_set and special_set[:3] == 'AUM':
+    if isAUM:
         return [], [], test_ids
+
     # evaluate on validation set
     model.eval()
-    predictions = best_out  # model(data)
+    predictions = best_out
     y = data.y
-    tr_predictions = predictions[data.train_mask]
-    tr_y = y[data.train_mask]
-    #draw_reliability_diagram(tr_predictions, tr_y, model_name, noise_type, mislabel_rate)
     if test_target == 'valid':
         predictions = predictions[data.val_mask]
         y = data.y[data.val_mask]
@@ -117,6 +100,4 @@ def train_GNNs(model_name, dataset, noise_type, mislabel_rate, n_epochs, lr, wd,
 
     predictions = to_softmax(predictions.cpu().detach().numpy())
     y = y.cpu().detach().numpy()
-    if special_set and special_set[:5] == 'nbagg':
-        return predictions, y, to_softmax(tr_predictions.cpu().detach().numpy()), tr_y.cpu().detach().numpy()
     return predictions, y

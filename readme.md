@@ -1,9 +1,8 @@
-# Mislabel Detection
-This directory contains the data and codes for project 'Detecting Mislabelled Samples in Popular Graph Prediction Benchmarks'.
+# GraphCleaner
+This repository contains the codes for paper 'GraphCleaner: Detecting Mislabelled Samples in Popular Graph Prediction Benchmarks'.
 
 
 ## File Framework
-Ignore directories and files not mentioned.
 
 Directories:
 - `dataset`: data directory
@@ -14,47 +13,41 @@ Directories:
 - `aum_data`: to save internal results when training AUM
 
 Files:
-- `noise_generator.py`: add symmetric or asymmetric noises to a specific dataset (currently support Flickr, Cora, PubMed, CiteSeer)
-- `run_GNNs/GNNs_validation.py`: called by mislabel detection methods to train GNNs (currently includes GCN, GIN, GAT)
-- `reliability_diagrams.py`: called to draw reliability diagrams
-- `run_baseline/Confident_Learning/AUM/NEIGHBORAGG-CMD/DY-bootstrap.py`: code to run different mislabel detection methods
-- `run_CL_negsamp.py`: code to run our method
-- `evaludate_different_methods.py`: code to compare our method with baselines
+- `noise_generator.py`: download dataset and add symmetric / asymmetric noises to a specific dataset
+- `Utils.py`: shared functions called by mislabel detection methods
+- `run_GNNs_validation.py`: called by mislabel detection methods to train GNNs
+- `run_baseline/Confident_Learning/AUM/DY-bootstrap.py`: code to run different mislabel detection methods
+- `run_CL_negsamp.py`: code to run our GraphCleaner
+- `run_CL_negsamp_withoutCL.py`: code to run no Cl version of our GraphCleaner
+- `evaludate_different_methods.py`: code to evaluate different mislabel detection methods
 
 
 ## Usage
-#### Generate Noise
-To add symmetric noise: 
-
-`python noise_generator.py --dataset Flickr --noise_type symmetric --mislabel_rate 0.1`
-
-To add asymmetric noise: 
-
-`python noise_generator.py --dataset Flickr --noise_type asymmetric --mislabel_rate 0.1`
-
-The generated noisy class map will be saved in `./dataset/Flickr/raw`.
+#### Step0: Preparation
+`pip install -r requirements.txt`
 
 
-#### Run Our Method
-`CUDA_VISIBLE_DEVICES=0 python run_CL_negsamp.py --model GCN --noise_type symmetric --mislabel_rate 0.1 --sample_rate 0.5 --classifier MLP --dataset Flickr`
+#### Step1: Generate Noise
+
+`python noise_generator.py --dataset <the name of dataset> --noise_type <symmetric or asymmetric> --mislabel_rate <mislabel rate>`
+
+The `dataset` directory will be created, and datasets will be downloaded automatically. This step will generate noisy class map which will be saved under `./dataset/<dataset dir>/raw/` and ground truth mislabel transition matrices.
 
 
-#### Run Baselines
-To run a baseline:
+#### Step2: Run Mislabel Detection Methods
+##### Run Our GraphCleaner
+`CUDA_VISIBLE_DEVICES=<gpu id> python run_CL_negsamp.py --model <base classifier name> --noise_type <symmetric or asymmetric> --mislabel_rate <mislabel_rate> --dataset <the name of dataset>`
 
-`CUDA_VISIBLE_DEVICES=0 python run_baseline.py --model GCN --noise_type symmetric --mislabel_rate 0.1 --dataset Flickr`
+##### Run Other Mislabel Detection Methods
+`CUDA_VISIBLE_DEVICES=<gpu id> python run_<method name>.py --model <base classifier name> --noise_type <symmetric or asymmetric> --mislabel_rate <mislabel_rate> --dataset <the name of dataset>`
+
+The `checkpoints`, `gnn_results`, `mislabel_results` and `tensorboard_logs` directories will be created. This step will generate the leaned mislabel transition matrices.
 
 
-#### Evaluation
-To evaluate one method (take Confident Learning for example):
+#### Step3: Evaluation
+Concatenate method names with '+' can evaluate several methods at the same time (`ours` means GraphCleaner):
 
-`python evaluate_different_methods.py --method CL --model GCN --noise_type symmetric --mislabel_rate 0.1 --dataset Flickr`
-
-To evaluate several methods (concatenate method names with '+'):
-
-`python evaluate_different_methods.py --method baseline+CL+AUM --model GCN --noise_type symmetric --mislabel_rate 0.1 --dataset Flickr`
-
-Currently not support NEIGHBORAGG-CMD because it does not provide a filtering strategy.
+`python evaluate_different_methods.py --method <example: baseline+CL+AUM> --model <base classifier name> --noise_type <symmetric or asymmetric> --mislabel_rate <mislabel_rate> --dataset <the name of dataset>`
 
 
 ## Visualization

@@ -1,0 +1,12 @@
+cleanlab==1.0.1
+numpy==1.21.2
+scikit-learn==1.0.2
+torch==1.10.2
+torch-geomeric==2.0.3
+xgboost==1.5.2
+ogb==1.3.3
+seaborn==0.11.2
+matplotlib==3.5.1
+pandas==1.2.3
+scipy==1.8.0
+aum==1.0.2
