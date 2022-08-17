@@ -1,31 +1,25 @@
-import os
-import random
+# Some codes are borrowed from https://github.com/PaulAlbert31/LabelNoiseCorrection
+# @inproceedings{ICML2019_UnsupervisedLabelNoise,
+#   title = {Unsupervised Label Noise Modeling and Loss Correction},
+#   authors = {Eric Arazo and Diego Ortego and Paul Albert and Noel E O'Connor and Kevin McGuinness},
+#   booktitle = {International Conference on Machine Learning (ICML)},
+#   month = {June},
+#   year = {2019}
+#  }
+
+
 import argparse
 import scipy.stats as stats
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+from sklearn.metrics import f1_score
 
 import torch
 import torch.nn.functional as F
-from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau
 
-from run_GNNs import GCN, myGIN, GAT, to_softmax, get_data
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, matthews_corrcoef
-
-
-def setup_seed(seed):
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-
-def ensure_dir(path):
-    if not os.path.exists(path):
-        os.makedirs(path)
+from GNN_models import GCN, myGIN, GAT, baseMLP, myGraphUNet
+from Utils import setup, ensure_dir, get_data
 
 
 def weighted_mean(x, w):
@@ -160,7 +154,7 @@ def compute_probabilities_batch(batch_losses, bmm_model, bmm_model_maxLoss, bmm_
     return B
 
 
-def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislabel_rate, noise_type):
+def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislabel_rate, noise_type, test_target):
     # prepare data
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print("Device: ", device)
@@ -176,12 +170,15 @@ def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislab
         model = myGIN(in_channels=n_features, hidden_channels=256, out_channels=n_classes)
     elif model_name == 'GAT':
         model = GAT(in_channels=n_features, hidden_channels=256, out_channels=n_classes)
+    elif model_name == 'MLP':
+        model = baseMLP([n_features, 256, n_classes])
+    elif model_name == 'GraphUNet':
+        model = myGraphUNet(in_channels=n_features, hidden_channels=16, out_channels=n_classes)
     model.to(device)
     print("Model: ", model)
 
     # prepare optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
-    scheduler = ReduceLROnPlateau(optimizer, mode='max')
 
     # load / train the model
     best_cri = 0
@@ -202,24 +199,28 @@ def train_GNNs(model_name, dataset, n_epochs, lr, wd, trained_model_file, mislab
         if cri > best_cri:
             print("New Best Criterion: {:.2f}".format(cri))
             best_cri = cri
-            torch.save(model.state_dict(), trained_model_file)
-
             all_losses = F.nll_loss(eval_out[data.train_mask], data.y[data.train_mask], reduction='none')
-            # all_probs = out
-            # arg_entr = torch.max(out[data.train_mask], dim=1)
-            # all_argmaxXentropy = F.nll_loss(out[data.train_mask], arg_entr, reduction='none')
             bmm_model, bmm_model_maxLoss, bmm_model_minLoss = track_training_loss(device, all_losses)
             val_losses = F.nll_loss(eval_out[data.val_mask], data.y[data.val_mask], reduction='none')
             B = compute_probabilities_batch(val_losses, bmm_model, bmm_model_maxLoss, bmm_model_minLoss)
-        scheduler.step(cri)
+
+    # look up test_target probabilities
+    model.eval()
+    eval_out = model(data)
+    if test_target == 'valid':
+        losses = F.nll_loss(eval_out[data.val_mask], data.y[data.val_mask], reduction='none')
+    else:
+        losses = F.nll_loss(eval_out[data.test_mask], data.y[data.test_mask], reduction='none')
+    B = compute_probabilities_batch(losses, bmm_model, bmm_model_maxLoss, bmm_model_minLoss)
     return B
 
 
 if __name__ == "__main__":
-    setup_seed(1119)
+    setup()
 
     parser = argparse.ArgumentParser(description="DY-Bootstrap")
-    parser.add_argument("--dataset", type=str, default='Flickr')
+    parser.add_argument("--exp", type=int, default=0)
+    parser.add_argument("--dataset", type=str, default='Cora')
     parser.add_argument("--data_dir", type=str, default='./dataset')
     parser.add_argument("--mislabel_rate", type=float, default=0.1)
     parser.add_argument("--noise_type", type=str, default='symmetric')
@@ -228,23 +229,24 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument('--weight_decay', type=float, default=0.0005)
     parser.add_argument('--validation', type=bool, default=True)
+    parser.add_argument("--test_target", type=str, default='test')
     args = parser.parse_args()
 
     ensure_dir('tensorboard_logs')
-    log_dir = 'tensorboard_logs/{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
-        (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
+    log_dir = 'tensorboard_logs/{}-{}-mislabel={}-{}-epochs={}-lr={}-wd={}-exp={}'.format \
+        (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay, args.exp)
     ensure_dir('checkpoints')
-    trained_model_file = 'checkpoints/{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
-        (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
+    trained_model_file = 'checkpoints/{}-{}-mislabel={}-{}-epochs={}-lr={}-wd={}-exp={}'.format \
+        (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay, args.exp)
     ensure_dir('gnn_results')
-    gnn_result_file = 'gnn_results/{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
-        (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
+    gnn_result_file = 'gnn_results/{}-{}-mislabel={}-{}-epochs={}-lr={}-wd={}-exp={}'.format \
+        (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay, args.exp)
     ensure_dir('mislabel_results')
-    mislabel_result_file = 'mislabel_results/validation-DYB-{}-{}-rate={}-{}-epochs={}-lr={}-wd={}'.format \
-        (args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay)
+    mislabel_result_file = 'mislabel_results/DYB-test={}-{}-{}-mislabel={}-{}-epochs={}-lr={}-wd={}-exp={}'.format \
+        (args.test_target, args.dataset, args.model, args.mislabel_rate, args.noise_type, args.n_epochs, args.lr, args.weight_decay, args.exp)
 
     B = train_GNNs(args.model, args.dataset, args.n_epochs, args.lr, args.weight_decay, trained_model_file,
-                   args.mislabel_rate, args.noise_type)
+                   args.mislabel_rate, args.noise_type, args.test_target)
 
     print('B: ', B)
     result = B > 0.5
